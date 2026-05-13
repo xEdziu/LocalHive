@@ -103,12 +103,12 @@ erDiagram
     }
 
     %% Relacje - Rdzeń (Core)
-    WORKERS ||--o{ SERVER_INSTANCES : "hosts" }
-    GAME_TEMPLATES ||--o{ SERVER_INSTANCES : "template for" }
-    WORKERS ||--o{ AGENT_COMMANDS : "recieves" }
+    WORKERS ||--o{ SERVER_INSTANCES : "hosts"
+    GAME_TEMPLATES ||--o{ SERVER_INSTANCES : "template for"
+    WORKERS ||--o{ AGENT_COMMANDS : "recieves"
 
     %% Relacje - Badania i Obliczenia
-    WORKERS ||--o{ WORKER_METRICS : "reports" }
-    WORKERS ||--o{ COMPUTE_TASKS : "executes" }
-    COMPUTE_JOBS ||--|{ COMPUTE_TASKS : "contains" }
+    WORKERS ||--o{ WORKER_METRICS : "reports"
+    WORKERS ||--o{ COMPUTE_TASKS : "executes"
+    COMPUTE_JOBS ||--|{ COMPUTE_TASKS : "contains"
 ```
