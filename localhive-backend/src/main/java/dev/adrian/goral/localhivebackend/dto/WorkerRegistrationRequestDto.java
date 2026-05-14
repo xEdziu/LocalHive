@@ -1,6 +1,7 @@
 package dev.adrian.goral.localhivebackend.dto;
 
 import dev.adrian.goral.localhivebackend.validation.IpAddress;
+import dev.adrian.goral.localhivebackend.validation.ValidRamAllocation;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -9,6 +10,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 @Data
+@ValidRamAllocation
 public class WorkerRegistrationRequestDto {
 
     @NotBlank(message = "Hostname cannot be blank")

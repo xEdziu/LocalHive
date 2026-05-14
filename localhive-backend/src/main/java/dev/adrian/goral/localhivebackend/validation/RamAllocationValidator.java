@@ -12,7 +12,6 @@ public class RamAllocationValidator implements ConstraintValidator<ValidRamAlloc
             return true;
         }
 
-        // Pozwalamy zadziałać field-level @Min najpierw
         if (dto.getTotalRamMb() < 0 || dto.getSharedRamMb() < 0) {
             return true;
         }

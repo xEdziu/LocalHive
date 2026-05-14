@@ -2,9 +2,11 @@ package dev.adrian.goral.localhivebackend.service;
 
 import dev.adrian.goral.localhivebackend.domain.Worker;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerStatus;
+import dev.adrian.goral.localhivebackend.exception.DuplicateResourceException;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -44,10 +46,9 @@ public class WorkerRegistryService {
             Worker savedWorker = workerRepository.save(newWorker);
             log.info("New machine requested to join the cluster: {} ({})", hostname, ipAddress);
             return savedWorker;
-        } catch (org.springframework.dao.DataIntegrityViolationException e) {
-            // Catches the unique constraint violation, avoiding race conditions
+        } catch (DataIntegrityViolationException e) {
             log.warn("Registration rejected. A machine with hostname {} already exists.", hostname);
-            throw new IllegalStateException("A machine with hostname " + hostname + " already exists in the registry.");
+            throw new DuplicateResourceException("hostname", hostname);
         }
     }
 
