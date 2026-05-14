@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  # Main PostgreSQL database for LocalHive Master
+  postgres-db:
+    image: postgres:16.2-alpine
+    container_name: localhive-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: localhive_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: defaultPassword
+    ports:
+      - "5432:5432" # Exposing port 5432 to the host for Spring Boot connection
+    volumes:
+      - localhive-pg-data:/var/lib/postgresql/data
+    networks:
+      - localhive-network
+
+  # Web-based database management tool (optional, for debugging)
+  db-viewer:
+    image: adminer:standalone
+    container_name: localhive-adminer
+    restart: unless-stopped
+    ports:
+      - "8081:8080" # Accessible via http://localhost:8081
+    depends_on:
+      - postgres-db
+    networks:
+      - localhive-network
+
+# Define persistent storage to prevent data loss on container restart
+volumes:
+  localhive-pg-data:
+
+# Define explicit bridge network for better isolation and future scalability
+networks:
+  localhive-network:
+    driver: bridge
