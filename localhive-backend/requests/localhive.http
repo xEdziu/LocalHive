@@ -1,0 +1,43 @@
+### 1. Check Setup Status
+GET http://localhost:8080/api/setup/status
+Accept: application/json
+
+### 2. Initialize System (Create Admin)
+POST http://localhost:8080/api/setup
+Content-Type: application/json
+
+{
+  "username": "Adrian",
+  "password": "SuperSecretPassword123"
+}
+
+### 3. Register a new Machine (Happy Path)
+POST http://localhost:8080/api/workers/register
+Content-Type: application/json
+
+{
+  "hostname": "Adrian-PC",
+  "ipAddress": "192.168.66.3",
+  "osType": "Windows 11",
+  "totalRamMb": 32768,
+  "sharedRamMb": 4096,
+  "cpuCores": 16,
+  "gpuName": "RTX 5080"
+}
+
+### 4. Register a Machine (Error: Custom RAM Validator)
+POST http://localhost:8080/api/workers/register
+Content-Type: application/json
+
+{
+  "hostname": "Test-PC",
+  "ipAddress": "10.0.0.1",
+  "osType": "Linux",
+  "totalRamMb": 2,
+  "sharedRamMb": 4096,
+  "cpuCores": 4,
+  "gpuName": null
+}
+
+### 5. Send Heartbeat (Replace UUID with the one from step 3!)
+POST http://localhost:8080/api/workers/YOUR-UUID-HERE/heartbeat

@@ -54,6 +54,34 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Catches database unique constraint violations globally (e.g. duplicate Hostname or Username).
+     */
+    @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
+    public ResponseEntity<ErrorResponseDto> handleDataIntegrityViolationException(org.springframework.dao.DataIntegrityViolationException ex) {
+        log.warn("Database constraint violation detected: {}", ex.getMostSpecificCause().getMessage());
+
+        ErrorResponseDto errorResponse = ErrorResponseDto.builder()
+                .status("error")
+                .message("A resource with this unique identifier already exists.")
+                .timestamp(LocalDateTime.now())
+                .build();
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(DuplicateResourceException.class)
+    public ResponseEntity<ErrorResponseDto> handleDuplicateResourceException(DuplicateResourceException ex) {
+        ErrorResponseDto errorResponse = ErrorResponseDto.builder()
+                .status("error")
+                .message(ex.getField() + " already exists.")
+                .fieldErrors(Map.of(ex.getField(), "This value is already taken."))
+                .timestamp(LocalDateTime.now())
+                .build();
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.CONFLICT);
+    }
+
+    /**
      * Fallback for any other unexpected RuntimeExceptions (prevents leaking Java stack traces to the frontend).
      */
     @ExceptionHandler(Exception.class)
