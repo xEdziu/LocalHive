@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Slf4j
@@ -50,6 +51,35 @@ public class WorkerRegistryService {
             log.warn("Registration rejected. A machine with hostname {} already exists.", hostname);
             throw new DuplicateResourceException("hostname", hostname);
         }
+    }
+
+    /**
+     * Retrieves all workers registered in the cluster.
+     * @return a list of all Worker entities.
+     */
+    public List<Worker> getAllWorkers() {
+        log.info("Fetching all workers from the registry.");
+        return workerRepository.findAll();
+    }
+
+    /**
+     * Approves a worker by changing its status from PENDING to ACTIVE.
+     * @param workerId the UUID of the worker to approve.
+     * @throws IllegalArgumentException if the worker is not found.
+     * @throws IllegalStateException if the worker is not in PENDING status.
+     */
+    @Transactional
+    public void approveWorker(UUID workerId) {
+        Worker worker = workerRepository.findById(workerId)
+                .orElseThrow(() -> new IllegalArgumentException("Worker not found with ID: " + workerId));
+
+        if (worker.getStatus() != WorkerStatus.PENDING) {
+            throw new IllegalStateException("Worker is not in PENDING status. Current status: " + worker.getStatus());
+        }
+
+        worker.setStatus(WorkerStatus.ACTIVE);
+        workerRepository.save(worker);
+        log.info("Worker {} ({}) has been approved and is now ACTIVE.", worker.getId(), worker.getHostname());
     }
 
     /**

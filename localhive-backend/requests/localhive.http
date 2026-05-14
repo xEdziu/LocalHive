@@ -8,7 +8,7 @@ Content-Type: application/json
 
 {
   "username": "Adrian",
-  "password": "SuperSecretPassword123"
+  "password": "SuperSecretPassword123!"
 }
 
 ### 3. Register a new Machine (Happy Path)
@@ -25,6 +25,10 @@ Content-Type: application/json
   "gpuName": "RTX 5080"
 }
 
+> {%
+client.global.set("worker_uuid", response.body.workerId);
+%}
+
 ### 4. Register a Machine (Error: Custom RAM Validator)
 POST http://localhost:8080/api/workers/register
 Content-Type: application/json
@@ -39,5 +43,13 @@ Content-Type: application/json
   "gpuName": null
 }
 
-### 5. Send Heartbeat (Replace UUID with the one from step 3!)
-POST http://localhost:8080/api/workers/YOUR-UUID-HERE/heartbeat
+### 5. Send Heartbeat
+POST http://localhost:8080/api/workers/{{worker_uuid}}/heartbeat
+
+### 6. Get all registered workers
+GET http://localhost:8080/api/admin/workers
+Accept: application/json
+
+### 7. Approve a specific worker
+POST http://localhost:8080/api/admin/workers/{{worker_uuid}}/approve
+Content-Type: application/json
