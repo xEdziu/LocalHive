@@ -66,7 +66,8 @@ Accept: application/json
 Authorization: Bearer {{auth_token}}
 
 ### 8. Approve a specific worker
-POST http://localhost:8080/api/admin/workers/{{worker_uuid}}/approve
+#POST http://localhost:8080/api/admin/workers/{{worker_uuid}}/approve
+POST http://localhost:8080/api/admin/workers/bcd904a2-5fe6-4a64-8203-276416b8d90b/approve
 Content-Type: application/json
 Authorization: Bearer {{auth_token}}
 
