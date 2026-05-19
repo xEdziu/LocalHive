@@ -3,6 +3,7 @@ package dev.adrian.goral.localhivebackend.controller;
 import dev.adrian.goral.localhivebackend.config.SecurityConfig;
 import dev.adrian.goral.localhivebackend.domain.User;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
+import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.security.JwtService;
 import dev.adrian.goral.localhivebackend.service.SetupService;
 import org.junit.jupiter.api.DisplayName;
@@ -16,6 +17,7 @@ import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import tools.jackson.databind.json.JsonMapper;
@@ -53,6 +55,12 @@ class AuthControllerTest {
 
     @MockitoBean
     private AuthenticationProvider authenticationProvider;
+
+    @MockitoBean
+    private WorkerRepository workerRepository;
+
+    @MockitoBean
+    private PasswordEncoder passwordEncoder;
 
     private static class LoginPayload {
         public String username;

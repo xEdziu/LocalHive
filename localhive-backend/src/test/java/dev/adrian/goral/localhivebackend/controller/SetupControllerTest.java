@@ -2,6 +2,7 @@ package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.config.SecurityConfig;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
+import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.security.JwtService;
 import dev.adrian.goral.localhivebackend.service.SetupService;
 import org.junit.jupiter.api.DisplayName;
@@ -11,6 +12,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.http.MediaType;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import tools.jackson.databind.json.JsonMapper;
@@ -44,6 +46,12 @@ class SetupControllerTest {
 
     @MockitoBean
     private AuthenticationProvider authenticationProvider;
+
+    @MockitoBean
+    private WorkerRepository workerRepository;
+
+    @MockitoBean
+    private PasswordEncoder passwordEncoder;
 
     @Test
     @DisplayName("Should return 409 when setup endpoint is locked by interceptor")

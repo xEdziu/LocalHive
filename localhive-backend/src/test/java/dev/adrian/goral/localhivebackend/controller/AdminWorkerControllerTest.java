@@ -4,6 +4,7 @@ import dev.adrian.goral.localhivebackend.config.SecurityConfig;
 import dev.adrian.goral.localhivebackend.domain.Worker;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerStatus;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
+import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.security.JwtService;
 import dev.adrian.goral.localhivebackend.service.SetupService;
 import dev.adrian.goral.localhivebackend.service.WorkerRegistryService;
@@ -14,6 +15,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.http.MediaType;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -23,7 +25,7 @@ import java.util.UUID;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasSize;
-import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -52,6 +54,12 @@ class AdminWorkerControllerTest {
 
     @MockitoBean
     private AuthenticationProvider authenticationProvider;
+
+    @MockitoBean
+    private WorkerRepository workerRepository;
+
+    @MockitoBean
+    private PasswordEncoder passwordEncoder;
 
     private static final String ADMIN_USER = "admin";
     private static final String ADMIN_ROLE = "ADMIN";
@@ -184,7 +192,7 @@ class AdminWorkerControllerTest {
     void shouldReturnSuccessWhenWorkerIsApprovedSuccessfully() throws Exception {
         // Given
         UUID workerId = UUID.randomUUID();
-        doNothing().when(workerRegistryService).approveWorker(workerId);
+        doReturn("raw-api-key-123").when(workerRegistryService).approveWorker(workerId);
 
         // When + Then
         mockMvc.perform(post("/api/admin/workers/{workerId}/approve", workerId)
@@ -281,7 +289,7 @@ class AdminWorkerControllerTest {
     void shouldCallServiceMethodWithCorrectWorkerId() throws Exception {
         // Given
         UUID workerId = UUID.randomUUID();
-        doNothing().when(workerRegistryService).approveWorker(workerId);
+        doReturn("raw-api-key-456").when(workerRegistryService).approveWorker(workerId);
 
         // When + Then
         mockMvc.perform(post("/api/admin/workers/{workerId}/approve", workerId)
@@ -317,8 +325,8 @@ class AdminWorkerControllerTest {
         // Given
         UUID workerId1 = UUID.randomUUID();
         UUID workerId2 = UUID.randomUUID();
-        doNothing().when(workerRegistryService).approveWorker(workerId1);
-        doNothing().when(workerRegistryService).approveWorker(workerId2);
+        doReturn("raw-api-key-1").when(workerRegistryService).approveWorker(workerId1);
+        doReturn("raw-api-key-2").when(workerRegistryService).approveWorker(workerId2);
 
         // When + Then
         mockMvc.perform(post("/api/admin/workers/{workerId}/approve", workerId1)

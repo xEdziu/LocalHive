@@ -2,6 +2,7 @@ package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.config.SecurityConfig;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
+import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.security.JwtService;
 import dev.adrian.goral.localhivebackend.service.SetupService;
 import dev.adrian.goral.localhivebackend.service.WorkerRegistryService;
@@ -13,6 +14,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import tools.jackson.databind.json.JsonMapper;
@@ -201,6 +203,12 @@ class WorkerControllerTest {
 
     @MockitoBean
     private AuthenticationProvider authenticationProvider;
+
+    @MockitoBean
+    private WorkerRepository workerRepository;
+
+    @MockitoBean
+    private PasswordEncoder passwordEncoder;
 
     private static java.util.Map<String, Object> validWorkerRegistrationPayload() {
         return new java.util.HashMap<>(java.util.Map.of(
