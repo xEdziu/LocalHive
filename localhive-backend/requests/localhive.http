@@ -29,7 +29,7 @@ POST http://localhost:8080/api/workers/register
 Content-Type: application/json
 
 {
-  "hostname": "Adrian-PC2",
+  "hostname": "Adrian-PC",
   "ipAddress": "192.168.66.3",
   "osType": "Windows 11",
   "totalRamMb": 32768,
@@ -58,6 +58,7 @@ Content-Type: application/json
 
 ### 6. Send Heartbeat
 POST http://localhost:8080/api/workers/{{worker_uuid}}/heartbeat
+X-API-KEY: {{api_key}}
 
 ### 7. Get all registered workers
 GET http://localhost:8080/api/admin/workers
@@ -68,3 +69,7 @@ Authorization: Bearer {{auth_token}}
 POST http://localhost:8080/api/admin/workers/{{worker_uuid}}/approve
 Content-Type: application/json
 Authorization: Bearer {{auth_token}}
+
+> {%
+client.global.set("api_key", response.body.apiKey);
+%}

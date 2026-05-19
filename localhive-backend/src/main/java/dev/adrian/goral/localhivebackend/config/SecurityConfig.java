@@ -1,5 +1,6 @@
 package dev.adrian.goral.localhivebackend.config;
 
+import dev.adrian.goral.localhivebackend.security.ApiKeyAuthenticationFilter;
 import dev.adrian.goral.localhivebackend.security.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
@@ -19,6 +20,7 @@ public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthFilter;
     private final AuthenticationProvider authenticationProvider;
+    private final ApiKeyAuthenticationFilter apiKeyAuthFilter;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) {
@@ -36,6 +38,7 @@ public class SecurityConfig {
 
                 // Configure provider and wire JWT filter into the pipeline
                 .authenticationProvider(authenticationProvider)
+                .addFilterBefore(apiKeyAuthFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
 
                 // Endpoint access rules
@@ -48,10 +51,12 @@ public class SecurityConfig {
 
                         // Allow raw agent interaction endpoints (Security tokens handled at service level)
                         .requestMatchers("/api/workers/register").permitAll()
-                        .requestMatchers("/api/workers/*/heartbeat").permitAll()
+
 
                         // Allow system infrastructure endpoints
                         .requestMatchers("/api/health", "/error").permitAll()
+
+                        .requestMatchers("/api/workers/**").authenticated()
 
                         // Core dashboard administration explicitly locked under ADMIN role
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")

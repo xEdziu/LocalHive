@@ -7,10 +7,13 @@ import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 
@@ -20,6 +23,7 @@ import java.util.UUID;
 public class WorkerRegistryService {
 
     private final WorkerRepository workerRepository;
+    private final PasswordEncoder passwordEncoder;
 
     /**
      * Registers a new agent requesting to join the cluster (Zero Trust approach).
@@ -65,11 +69,12 @@ public class WorkerRegistryService {
     /**
      * Approves a worker by changing its status from PENDING to ACTIVE.
      * @param workerId the UUID of the worker to approve.
+     * @return the raw API key that the worker can use for authentication (only returned once).
      * @throws IllegalArgumentException if the worker is not found.
      * @throws IllegalStateException if the worker is not in PENDING status.
      */
     @Transactional
-    public void approveWorker(UUID workerId) {
+    public String approveWorker(UUID workerId) {
         Worker worker = workerRepository.findById(workerId)
                 .orElseThrow(() -> new IllegalArgumentException("Worker not found with ID: " + workerId));
 
@@ -77,9 +82,15 @@ public class WorkerRegistryService {
             throw new IllegalStateException("Worker is not in PENDING status. Current status: " + worker.getStatus());
         }
 
+        String rawApiKey = generateSecureApiKey();
+        String hashedApiKey = passwordEncoder.encode(rawApiKey);
+
+        worker.setApiKeyHash(hashedApiKey);
         worker.setStatus(WorkerStatus.ACTIVE);
         workerRepository.save(worker);
         log.info("Worker {} ({}) has been approved and is now ACTIVE.", worker.getId(), worker.getHostname());
+
+        return rawApiKey;
     }
 
     /**
@@ -100,5 +111,12 @@ public class WorkerRegistryService {
             }
             workerRepository.save(worker);
         }, () -> log.warn("Received Heartbeat from an unknown Worker ID: {}", workerId));
+    }
+
+    private String generateSecureApiKey() {
+        SecureRandom secureRandom = new SecureRandom();
+        byte[] randomBytes = new byte[32]; // 256 bits of entropy
+        secureRandom.nextBytes(randomBytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes);
     }
 }

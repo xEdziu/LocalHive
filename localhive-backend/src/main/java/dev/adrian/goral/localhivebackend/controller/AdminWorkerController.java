@@ -44,11 +44,12 @@ public class AdminWorkerController {
         log.info("ADMIN: Attempting to approve worker: {}", workerId);
 
         try {
-            workerRegistryService.approveWorker(workerId);
+            String rawApiKey = workerRegistryService.approveWorker(workerId);
 
             return ResponseEntity.ok(Map.of(
                     "status", "success",
-                    "message", "Worker has been approved and is now ACTIVE."
+                    "message", "Worker has been approved and is now ACTIVE.",
+                    "apiKey", rawApiKey
             ));
 
         } catch (IllegalArgumentException e) {
