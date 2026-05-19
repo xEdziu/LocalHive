@@ -1,7 +1,10 @@
 package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.domain.Worker;
+import dev.adrian.goral.localhivebackend.dto.WorkerAllocationUpdateRequestDto;
+import dev.adrian.goral.localhivebackend.dto.WorkerHardwareUpdateRequestDto;
 import dev.adrian.goral.localhivebackend.dto.WorkerRegistrationRequestDto;
+import dev.adrian.goral.localhivebackend.dto.WorkerResponseDto;
 import dev.adrian.goral.localhivebackend.service.WorkerRegistryService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -55,11 +58,53 @@ public class WorkerController {
     }
 
     /**
+     * Endpoint for an Agent to update only the shared RAM allocation it offers to the swarm.
+     */
+    @PatchMapping("/{workerId}/allocation")
+    public ResponseEntity<WorkerResponseDto> updateAllocation(
+            @PathVariable UUID workerId,
+            @Valid @RequestBody WorkerAllocationUpdateRequestDto requestDto
+    ) {
+        log.info("Received allocation update request from worker: {}", workerId);
+
+        try {
+            Worker updatedWorker = workerRegistryService.updateWorkerAllocation(workerId, requestDto.getSharedRamMb());
+            return ResponseEntity.ok(WorkerResponseDto.fromEntity(updatedWorker));
+
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
+
+    /**
+     * Endpoint for an Agent to report hardware changes, including RAM replacements.
+     * If total RAM changes, shared RAM must be reported in the same request.
+     */
+    @PatchMapping("/{workerId}/spec")
+    public ResponseEntity<WorkerResponseDto> updateHardwareSpec(
+            @PathVariable UUID workerId,
+            @Valid @RequestBody WorkerHardwareUpdateRequestDto requestDto
+    ) {
+        log.info("Received hardware spec update request from worker: {}", workerId);
+
+        try {
+            Worker updatedWorker = workerRegistryService.updateWorkerHardwareSpec(workerId, requestDto);
+            return ResponseEntity.ok(WorkerResponseDto.fromEntity(updatedWorker));
+
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
+
+    /**
      * Endpoint for an Agent to send its periodic "I am alive" signal.
      */
     @PostMapping("/{workerId}/heartbeat")
     public ResponseEntity<?> heartbeat(@PathVariable UUID workerId) {
-        // TODO: In the Security step, we will require an API-Key header here.
         workerRegistryService.recordHeartbeat(workerId);
 
         return ResponseEntity.ok(Map.of("status", "success"));

@@ -73,3 +73,56 @@ Authorization: Bearer {{auth_token}}
 > {%
 client.global.set("api_key", response.body.apiKey);
 %}
+
+### 9. Update worker allocation (Happy Path: change only shared RAM)
+PATCH http://localhost:8080/api/workers/{{worker_uuid}}/allocation
+Content-Type: application/json
+X-API-KEY: {{api_key}}
+
+{
+  "sharedRamMb": 8192
+}
+
+### 10. Update worker allocation (Sad Path: shared RAM exceeds total RAM)
+PATCH http://localhost:8080/api/workers/{{worker_uuid}}/allocation
+Content-Type: application/json
+X-API-KEY: {{api_key}}
+
+{
+  "sharedRamMb": 65536
+}
+
+### 11. Update worker hardware spec (Happy Path: report changed hardware + RAM together)
+PATCH http://localhost:8080/api/workers/{{worker_uuid}}/spec
+Content-Type: application/json
+X-API-KEY: {{api_key}}
+
+{
+  "hostname": "Adrian-PC-Updated",
+  "ipAddress": "192.168.66.3",
+  "osType": "Windows 11 Pro",
+  "totalRamMb": 65536,
+  "sharedRamMb": 8192,
+  "cpuCores": 32,
+  "gpuName": "RTX 5090"
+}
+
+### 12. Update worker hardware spec (Sad Path: total RAM changed without shared RAM)
+PATCH http://localhost:8080/api/workers/{{worker_uuid}}/spec
+Content-Type: application/json
+X-API-KEY: {{api_key}}
+
+{
+  "totalRamMb": 65536,
+  "cpuCores": 32,
+  "gpuName": "RTX 5090"
+}
+
+### 13. Update worker allocation (Sad Path: missing X-API-KEY)
+PATCH http://localhost:8080/api/workers/{{worker_uuid}}/allocation
+Content-Type: application/json
+
+{
+  "sharedRamMb": 8192
+}
+
