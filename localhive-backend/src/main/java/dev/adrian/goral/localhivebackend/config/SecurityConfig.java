@@ -1,37 +1,62 @@
 package dev.adrian.goral.localhivebackend.config;
 
+import dev.adrian.goral.localhivebackend.security.JwtAuthenticationFilter;
+import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 @Configuration
 @EnableWebSecurity
+@RequiredArgsConstructor
 public class SecurityConfig {
 
+    private final JwtAuthenticationFilter jwtAuthFilter;
+    private final AuthenticationProvider authenticationProvider;
+
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) {
         http
-                // Disable CSRF (Cross-Site Request Forgery) as it's not needed for stateless REST APIs
+                // Disable CSRF as it's not needed for stateless REST APIs
                 .csrf(AbstractHttpConfigurer::disable)
 
-                // Disable default HTML login form
+                // Disable default HTML login forms
                 .formLogin(AbstractHttpConfigurer::disable)
                 .httpBasic(AbstractHttpConfigurer::disable)
 
-                // Ensure the application is strictly stateless (no JSESSIONID cookies)
-                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                // Strictly stateless architecture
+                .sessionManagement(session ->
+                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
-                // 4. Configure endpoint access rules
+                // Configure provider and wire JWT filter into the pipeline
+                .authenticationProvider(authenticationProvider)
+                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+
+                // Endpoint access rules
                 .authorizeHttpRequests(auth -> auth
-                        // Allow anyone to access the setup wizard endpoints
+                        // Allow setup wizard endpoints to be public
                         .requestMatchers("/api/setup/**").permitAll()
-                        // Allow system endpoints (Spring Boot Actuator, errors)
+
+                        // Allow authentication endpoint to be public
+                        .requestMatchers("/api/auth/**").permitAll()
+
+                        // Allow raw agent interaction endpoints (Security tokens handled at service level)
+                        .requestMatchers("/api/workers/register").permitAll()
+                        .requestMatchers("/api/workers/*/heartbeat").permitAll()
+
+                        // Allow system infrastructure endpoints
                         .requestMatchers("/api/health", "/error").permitAll()
-                        // Block everything else (requires authentication)
+
+                        // Core dashboard administration explicitly locked under ADMIN role
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
+
+                        // Block everything else
                         .anyRequest().authenticated()
                 );
 

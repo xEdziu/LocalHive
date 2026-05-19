@@ -1,6 +1,10 @@
 spring:
   application:
     name: localhive-panel
+    security:
+      jwt:
+        secret-key: ${JWT_SECRET:6vD7pIQjDYUB3efQun08dLltGwSSomHeTUefBJAjaKS}
+        expiration: ${JWT_EXPIRATION:86400000} # 24 hours in milliseconds
 
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/localhive_db}

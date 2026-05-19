@@ -4,6 +4,7 @@ import dev.adrian.goral.localhivebackend.domain.User;
 import dev.adrian.goral.localhivebackend.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,6 +14,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class SetupService {
 
     private final UserRepository userRepository;
+
+    private final PasswordEncoder passwordEncoder;
 
     // In-memory cache.
     // Null = unknown (needs DB check), False = system is fully configured.
@@ -61,12 +64,11 @@ public class SetupService {
             throw new IllegalStateException("System is already configured. Cannot run setup again.");
         }
 
-        // TODO: When working with Security module, inject PasswordEncoder (Bcrypt) here.
-        String temporaryHash = "{bcrypt}simulated_hash_" + rawPassword;
+        String securedHash = passwordEncoder.encode(rawPassword);
 
         User adminUser = User.builder()
                 .username(username)
-                .passwordHash(temporaryHash)
+                .passwordHash(securedHash)
                 .build();
 
         userRepository.save(adminUser);

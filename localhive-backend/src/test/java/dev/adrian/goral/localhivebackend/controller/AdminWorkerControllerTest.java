@@ -4,6 +4,7 @@ import dev.adrian.goral.localhivebackend.config.SecurityConfig;
 import dev.adrian.goral.localhivebackend.domain.Worker;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerStatus;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
+import dev.adrian.goral.localhivebackend.security.JwtService;
 import dev.adrian.goral.localhivebackend.service.SetupService;
 import dev.adrian.goral.localhivebackend.service.WorkerRegistryService;
 import org.junit.jupiter.api.DisplayName;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -44,6 +46,12 @@ class AdminWorkerControllerTest {
 
     @MockitoBean
     private SetupService setupService;
+
+    @MockitoBean
+    private JwtService jwtService;
+
+    @MockitoBean
+    private AuthenticationProvider authenticationProvider;
 
     private static final String ADMIN_USER = "admin";
     private static final String ADMIN_ROLE = "ADMIN";

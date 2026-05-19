@@ -11,12 +11,25 @@ Content-Type: application/json
   "password": "SuperSecretPassword123!"
 }
 
-### 3. Register a new Machine (Happy Path)
+### 3. Admin Login (Get JWT Token)
+POST http://localhost:8080/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "Adrian",
+  "password": "SuperSecretPassword123!"
+}
+
+> {%
+client.global.set("auth_token", response.body.token);
+%}
+
+### 4. Register a new Machine (Happy Path)
 POST http://localhost:8080/api/workers/register
 Content-Type: application/json
 
 {
-  "hostname": "Adrian-PC",
+  "hostname": "Adrian-PC2",
   "ipAddress": "192.168.66.3",
   "osType": "Windows 11",
   "totalRamMb": 32768,
@@ -29,7 +42,7 @@ Content-Type: application/json
 client.global.set("worker_uuid", response.body.workerId);
 %}
 
-### 4. Register a Machine (Error: Custom RAM Validator)
+### 5. Register a Machine (Error: Custom RAM Validator)
 POST http://localhost:8080/api/workers/register
 Content-Type: application/json
 
@@ -43,13 +56,15 @@ Content-Type: application/json
   "gpuName": null
 }
 
-### 5. Send Heartbeat
+### 6. Send Heartbeat
 POST http://localhost:8080/api/workers/{{worker_uuid}}/heartbeat
 
-### 6. Get all registered workers
+### 7. Get all registered workers
 GET http://localhost:8080/api/admin/workers
 Accept: application/json
+Authorization: Bearer {{auth_token}}
 
-### 7. Approve a specific worker
+### 8. Approve a specific worker
 POST http://localhost:8080/api/admin/workers/{{worker_uuid}}/approve
 Content-Type: application/json
+Authorization: Bearer {{auth_token}}
