@@ -34,3 +34,8 @@ localhive:
 
     # Research module (Master's thesis): Aggregation of latencies, protocols, and CPU usage (DISABLED)
     research-metrics: true
+
+worker:
+  heartbeat:
+    offline-timeout-seconds: 30
+    check-interval-seconds: 10
