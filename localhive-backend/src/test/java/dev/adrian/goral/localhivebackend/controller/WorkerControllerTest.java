@@ -2,6 +2,7 @@ package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.config.SecurityConfig;
 import dev.adrian.goral.localhivebackend.domain.Worker;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerStatus;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.security.JwtService;
@@ -12,9 +13,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
+import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -22,18 +23,13 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.util.Optional;
 import java.util.UUID;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(WorkerController.class)
 @Import({SecurityConfig.class, GlobalExceptionHandler.class})
@@ -384,6 +380,273 @@ class WorkerControllerTest {
                 .andExpect(content().string("Invalid API Key"));
 
         verify(workerRegistryService, never()).updateWorkerAllocation(any(), any());
+    }
+
+    @Test
+    @DisplayName("Should return 200 when heartbeat request is valid with pauseEnabled and sharedRamMb")
+    void shouldReturnOkWhenHeartbeatIsValid() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+        String apiKey = "worker-api-key";
+        String apiKeyHash = "hashed-api-key";
+
+        // Mock the filter's workerRepository.findById() and passwordEncoder.matches()
+        when(workerRepository.findById(workerId)).thenReturn(Optional.of(authenticatedWorker(workerId, apiKeyHash)));
+        when(passwordEncoder.matches(apiKey, apiKeyHash)).thenReturn(true);
+
+        var heartbeatRequest = java.util.Map.of(
+                "pauseEnabled", false,
+                "sharedRamMb", 4096
+        );
+
+        // When + Then
+        mockMvc.perform(post("/api/workers/{workerId}/heartbeat", workerId)
+                        .header("X-API-KEY", apiKey)
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(heartbeatRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("success"));
+
+        verify(workerRegistryService).handleHeartbeat(
+                eq(workerId),
+                isNull(),
+                argThat(dto -> dto.pauseEnabled() == false && dto.sharedRamMb() == 4096)
+        );
+    }
+
+    @Test
+    @DisplayName("Should return 401 when heartbeat request is missing X-API-KEY header")
+    void shouldReturnUnauthorizedWhenHeartbeatMissingApiKey() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+
+        var heartbeatRequest = java.util.Map.of(
+                "pauseEnabled", false,
+                "sharedRamMb", 4096
+        );
+
+        // When + Then
+        mockMvc.perform(post("/api/workers/{workerId}/heartbeat", workerId)
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(heartbeatRequest)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().string("Missing X-API-KEY header"));
+
+        verify(workerRegistryService, never()).handleHeartbeat(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Should return 400 when heartbeat request is missing pauseEnabled field")
+    void shouldReturnBadRequestWhenHeartbeatMissingPauseEnabled() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+        String apiKey = "worker-api-key";
+        String apiKeyHash = "hashed-api-key";
+
+        // Mock the filter's authentication
+        when(workerRepository.findById(workerId)).thenReturn(Optional.of(authenticatedWorker(workerId, apiKeyHash)));
+        when(passwordEncoder.matches(apiKey, apiKeyHash)).thenReturn(true);
+
+        var heartbeatRequest = java.util.Map.of(
+                "sharedRamMb", 4096
+        );
+
+        // When + Then
+        mockMvc.perform(post("/api/workers/{workerId}/heartbeat", workerId)
+                        .header("X-API-KEY", apiKey)
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(heartbeatRequest)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value("error"));
+
+        verify(workerRegistryService, never()).handleHeartbeat(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Should return 400 when heartbeat request is missing sharedRamMb field")
+    void shouldReturnBadRequestWhenHeartbeatMissingSharedRamMb() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+        String apiKey = "worker-api-key";
+        String apiKeyHash = "hashed-api-key";
+
+        // Mock the filter's authentication
+        when(workerRepository.findById(workerId)).thenReturn(Optional.of(authenticatedWorker(workerId, apiKeyHash)));
+        when(passwordEncoder.matches(apiKey, apiKeyHash)).thenReturn(true);
+
+        var heartbeatRequest = java.util.Map.of(
+                "pauseEnabled", false
+        );
+
+        // When + Then
+        mockMvc.perform(post("/api/workers/{workerId}/heartbeat", workerId)
+                        .header("X-API-KEY", apiKey)
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(heartbeatRequest)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value("error"));
+
+        verify(workerRegistryService, never()).handleHeartbeat(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Should return 400 when heartbeat sharedRamMb is negative")
+    void shouldReturnBadRequestWhenHeartbeatSharedRamMbIsNegative() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+        String apiKey = "worker-api-key";
+        String apiKeyHash = "hashed-api-key";
+
+        // Mock the filter's authentication
+        when(workerRepository.findById(workerId)).thenReturn(Optional.of(authenticatedWorker(workerId, apiKeyHash)));
+        when(passwordEncoder.matches(apiKey, apiKeyHash)).thenReturn(true);
+
+        var heartbeatRequest = java.util.Map.of(
+                "pauseEnabled", false,
+                "sharedRamMb", -100
+        );
+
+        // When + Then
+        mockMvc.perform(post("/api/workers/{workerId}/heartbeat", workerId)
+                        .header("X-API-KEY", apiKey)
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(heartbeatRequest)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.fieldErrors.sharedRamMb").value("sharedRamMb cannot be negative"));
+
+        verify(workerRegistryService, never()).handleHeartbeat(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Should return 400 when heartbeat sharedRamMb exceeds maximum")
+    void shouldReturnBadRequestWhenHeartbeatSharedRamMbExceedsMaximum() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+        String apiKey = "worker-api-key";
+        String apiKeyHash = "hashed-api-key";
+
+        // Mock the filter's authentication
+        when(workerRepository.findById(workerId)).thenReturn(Optional.of(authenticatedWorker(workerId, apiKeyHash)));
+        when(passwordEncoder.matches(apiKey, apiKeyHash)).thenReturn(true);
+
+        var heartbeatRequest = java.util.Map.of(
+                "pauseEnabled", false,
+                "sharedRamMb", 10_485_761
+        );
+
+        // When + Then
+        mockMvc.perform(post("/api/workers/{workerId}/heartbeat", workerId)
+                        .header("X-API-KEY", apiKey)
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(heartbeatRequest)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.fieldErrors.sharedRamMb").value("sharedRamMb is unrealistically high"));
+
+        verify(workerRegistryService, never()).handleHeartbeat(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Should update worker pause state when heartbeat with pauseEnabled=true")
+    void shouldUpdateWorkerPauseStateWhenHeartbeatHasPauseEnabled() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+        String apiKey = "worker-api-key";
+        String apiKeyHash = "hashed-api-key";
+
+        // Mock the filter's authentication
+        when(workerRepository.findById(workerId)).thenReturn(Optional.of(authenticatedWorker(workerId, apiKeyHash)));
+        when(passwordEncoder.matches(apiKey, apiKeyHash)).thenReturn(true);
+
+        var heartbeatRequest = java.util.Map.of(
+                "pauseEnabled", true,
+                "sharedRamMb", 8192
+        );
+
+        // When + Then
+        mockMvc.perform(post("/api/workers/{workerId}/heartbeat", workerId)
+                        .header("X-API-KEY", apiKey)
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(heartbeatRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("success"));
+
+        verify(workerRegistryService).handleHeartbeat(
+                eq(workerId),
+                isNull(),
+                argThat(dto -> dto.pauseEnabled() == true && dto.sharedRamMb() == 8192)
+        );
+    }
+
+    @Test
+    @DisplayName("Should recover offline worker to active status when heartbeat received")
+    void shouldRecoverWorkerFromOfflineStatusWhenHeartbeatReceived() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+        String apiKey = "worker-api-key";
+        String apiKeyHash = "hashed-api-key";
+
+        Worker offlineWorker = Worker.builder()
+                .id(workerId)
+                .hostname("offline-worker")
+                .ipAddress("192.168.1.10")
+                .osType("Windows 11")
+                .totalRamMb(32768)
+                .sharedRamMb(4096)
+                .cpuCores(16)
+                .gpuName("RTX 5080")
+                .status(WorkerStatus.OFFLINE)
+                .apiKeyHash(apiKeyHash)
+                .build();
+
+        // Mock the filter's authentication
+        when(workerRepository.findById(workerId)).thenReturn(Optional.of(offlineWorker));
+        when(passwordEncoder.matches(apiKey, apiKeyHash)).thenReturn(true);
+
+        var heartbeatRequest = java.util.Map.of(
+                "pauseEnabled", false,
+                "sharedRamMb", 4096
+        );
+
+        // When + Then
+        mockMvc.perform(post("/api/workers/{workerId}/heartbeat", workerId)
+                        .header("X-API-KEY", apiKey)
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(heartbeatRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("success"));
+
+        // Verify the worker state was updated
+        verify(workerRegistryService).handleHeartbeat(
+                eq(workerId),
+                isNull(),
+                argThat(dto -> dto.pauseEnabled() == false && dto.sharedRamMb() == 4096)
+        );
     }
 
     @MockitoBean

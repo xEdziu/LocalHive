@@ -3,6 +3,7 @@ package dev.adrian.goral.localhivebackend.service;
 import dev.adrian.goral.localhivebackend.domain.Worker;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerStatus;
 import dev.adrian.goral.localhivebackend.dto.WorkerHardwareUpdateRequestDto;
+import dev.adrian.goral.localhivebackend.dto.WorkerHeartbeatRequestDto;
 import dev.adrian.goral.localhivebackend.exception.DuplicateResourceException;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +26,7 @@ public class WorkerRegistryService {
 
     private final WorkerRepository workerRepository;
     private final PasswordEncoder passwordEncoder;
+    private final WorkerAuthService workerAuthService;
 
     /**
      * Registers a new agent requesting to join the cluster (Zero Trust approach).
@@ -204,6 +206,55 @@ public class WorkerRegistryService {
             }
             workerRepository.save(worker);
         }, () -> log.warn("Received Heartbeat from an unknown Worker ID: {}", workerId));
+    }
+
+    /**
+     * Handles extended heartbeat from an agent, updating worker state with pause info and RAM allocation.
+     * Performs Zero Trust verification via API key when rawApiKey is provided (null when filter already validated).
+     * Maps pauseEnabled flag to PAUSED or ACTIVE status.
+     *
+     * @param workerId ID of the worker sending the heartbeat.
+     * @param rawApiKey Raw API key for authentication (can be null if pre-validated by filter).
+     * @param request Heartbeat payload containing pauseEnabled and sharedRamMb.
+     * @throws IllegalArgumentException if worker not found or API key is invalid.
+     * @throws IllegalStateException if RAM validation fails.
+     */
+    @Transactional
+    public void handleHeartbeat(UUID workerId, String rawApiKey, WorkerHeartbeatRequestDto request) {
+        Worker worker;
+        
+        if (rawApiKey != null) {
+            // API key provided - validate it (may be called outside request context)
+            worker = workerAuthService.verifyWorker(workerId, rawApiKey);
+        } else {
+            // No API key provided - assume pre-validated by filter or other mechanism
+            worker = workerRepository.findById(workerId)
+                    .orElseThrow(() -> new IllegalArgumentException("Worker not found with ID: " + workerId));
+        }
+
+        worker.setLastHeartbeatAt(LocalDateTime.now());
+
+        // Determine status based on pauseEnabled flag
+        WorkerStatus newStatus = request.pauseEnabled() ? WorkerStatus.PAUSED : WorkerStatus.ACTIVE;
+
+        // Auto-recovery: if a dead node wakes up, transition from OFFLINE appropriately
+        if (worker.getStatus() == WorkerStatus.OFFLINE) {
+            log.info("Machine {} has returned online and is now {}.", worker.getHostname(), newStatus);
+        }
+
+        worker.setStatus(newStatus);
+
+        // Validate that sharedRamMb doesn't exceed totalRamMb
+        if (request.sharedRamMb() > worker.getTotalRamMb()) {
+            throw new IllegalStateException("sharedRamMb cannot be greater than totalRamMb");
+        }
+
+        worker.setSharedRamMb(request.sharedRamMb());
+
+        workerRepository.save(worker);
+
+        log.info("Heartbeat processed for worker {} - status: {}, sharedRamMb: {}",
+                workerId, newStatus, request.sharedRamMb());
     }
 
     private Worker findWorkerOrThrow(UUID workerId) {

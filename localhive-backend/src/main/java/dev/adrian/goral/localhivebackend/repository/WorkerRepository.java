@@ -29,4 +29,15 @@ public interface WorkerRepository extends JpaRepository<Worker, UUID> {
     int markInactiveWorkersOffline(WorkerStatus activeStatus,
                                    WorkerStatus offlineStatus,
                                    LocalDateTime cutoffTime);
+
+    @Query("""
+        select w from Worker w
+        where w.status = :status
+          and w.sharedRamMb >= :requiredRamMb
+        order by w.sharedRamMb desc
+        """)
+    List<Worker> findEligibleWorkersForTaskAssignment(
+        WorkerStatus status,
+        int requiredRamMb
+    );
 }

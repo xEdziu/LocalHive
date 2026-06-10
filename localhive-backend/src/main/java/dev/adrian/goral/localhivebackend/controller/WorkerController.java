@@ -1,10 +1,7 @@
 package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.domain.Worker;
-import dev.adrian.goral.localhivebackend.dto.WorkerAllocationUpdateRequestDto;
-import dev.adrian.goral.localhivebackend.dto.WorkerHardwareUpdateRequestDto;
-import dev.adrian.goral.localhivebackend.dto.WorkerRegistrationRequestDto;
-import dev.adrian.goral.localhivebackend.dto.WorkerResponseDto;
+import dev.adrian.goral.localhivebackend.dto.*;
 import dev.adrian.goral.localhivebackend.service.WorkerRegistryService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -101,11 +98,20 @@ public class WorkerController {
     }
 
     /**
-     * Endpoint for an Agent to send its periodic "I am alive" signal.
+     * Endpoint for an Agent to send its periodic "I am alive" signal with state information.
+     * Now includes pauseEnabled and sharedRamMb updates via JSON body.
+     * API Key authentication is handled by ApiKeyAuthenticationFilter.
      */
     @PostMapping("/{workerId}/heartbeat")
-    public ResponseEntity<?> heartbeat(@PathVariable UUID workerId) {
-        workerRegistryService.recordHeartbeat(workerId);
+    public ResponseEntity<?> heartbeat(
+            @PathVariable UUID workerId,
+            @Valid @RequestBody WorkerHeartbeatRequestDto request
+    ) {
+        log.info("Received heartbeat from worker: {} - pauseEnabled: {}, sharedRamMb: {}",
+                workerId, request.pauseEnabled(), request.sharedRamMb());
+
+        String apiKey = null;
+        workerRegistryService.handleHeartbeat(workerId, apiKey, request);
 
         return ResponseEntity.ok(Map.of("status", "success"));
     }
