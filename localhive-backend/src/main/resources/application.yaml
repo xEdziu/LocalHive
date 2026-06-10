@@ -16,7 +16,7 @@ spring:
   jpa:
     # Todo: after thesis defense, change to 'validate' and use Flyway/Liquibase for schema management.
     hibernate:
-      ddl-auto: create-drop
+      ddl-auto: update
 
     show-sql: false
     properties:

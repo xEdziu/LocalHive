@@ -105,12 +105,12 @@ public class WorkerController {
     @PostMapping("/{workerId}/heartbeat")
     public ResponseEntity<?> heartbeat(
             @PathVariable UUID workerId,
+            @RequestHeader("X-API-KEY") String apiKey,
             @Valid @RequestBody WorkerHeartbeatRequestDto request
     ) {
         log.info("Received heartbeat from worker: {} - pauseEnabled: {}, sharedRamMb: {}",
                 workerId, request.pauseEnabled(), request.sharedRamMb());
 
-        String apiKey = null;
         workerRegistryService.handleHeartbeat(workerId, apiKey, request);
 
         return ResponseEntity.ok(Map.of("status", "success"));
