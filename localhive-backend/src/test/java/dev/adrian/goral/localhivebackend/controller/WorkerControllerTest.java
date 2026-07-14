@@ -412,7 +412,7 @@ class WorkerControllerTest {
 
         verify(workerRegistryService).handleHeartbeat(
                 eq(workerId),
-                isNull(),
+                eq("worker-api-key"),
                 argThat(dto -> dto.pauseEnabled() == false && dto.sharedRamMb() == 4096)
         );
     }
@@ -595,7 +595,7 @@ class WorkerControllerTest {
 
         verify(workerRegistryService).handleHeartbeat(
                 eq(workerId),
-                isNull(),
+                eq("worker-api-key"),
                 argThat(dto -> dto.pauseEnabled() == true && dto.sharedRamMb() == 8192)
         );
     }
@@ -644,7 +644,7 @@ class WorkerControllerTest {
         // Verify the worker state was updated
         verify(workerRegistryService).handleHeartbeat(
                 eq(workerId),
-                isNull(),
+                eq("worker-api-key"),
                 argThat(dto -> dto.pauseEnabled() == false && dto.sharedRamMb() == 4096)
         );
     }

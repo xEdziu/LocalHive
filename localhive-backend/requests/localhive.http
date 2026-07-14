@@ -56,9 +56,53 @@ Content-Type: application/json
   "gpuName": null
 }
 
-### 6. Send Heartbeat
+### 6. Send Heartbeat (Happy Path)
 POST http://localhost:8080/api/workers/{{worker_uuid}}/heartbeat
 X-API-KEY: {{api_key}}
+Content-Type: application/json
+
+{
+  "pauseEnabled": false,
+  "sharedRamMb": 4096
+}
+
+### 6b. Send Heartbeat (with pause enabled)
+POST http://localhost:8080/api/workers/{{worker_uuid}}/heartbeat
+X-API-KEY: {{api_key}}
+Content-Type: application/json
+
+{
+  "pauseEnabled": true,
+  "sharedRamMb": 4096
+}
+
+### 6c. Send Heartbeat (Sad Path - missing X-API-KEY)
+POST http://localhost:8080/api/workers/{{worker_uuid}}/heartbeat
+Content-Type: application/json
+
+{
+  "pauseEnabled": false,
+  "sharedRamMb": 4096
+}
+
+### 6d. Send Heartbeat (Sad Path - missing pauseEnabled field)
+POST http://localhost:8080/api/workers/{{worker_uuid}}/heartbeat
+X-API-KEY: {{api_key}}
+Content-Type: application/json
+
+{
+  "sharedRamMb": 4096
+}
+
+### 6e. Send Heartbeat (Sad Path - sharedRamMb out of range)
+POST http://localhost:8080/api/workers/{{worker_uuid}}/heartbeat
+X-API-KEY: {{api_key}}
+Content-Type: application/json
+
+{
+  "pauseEnabled": false,
+  "sharedRamMb": 20000000
+}
 
 ### 7. Get all registered workers
 GET http://localhost:8080/api/admin/workers
@@ -67,7 +111,7 @@ Authorization: Bearer {{auth_token}}
 
 ### 8. Approve a specific worker
 #POST http://localhost:8080/api/admin/workers/{{worker_uuid}}/approve
-POST http://localhost:8080/api/admin/workers/bcd904a2-5fe6-4a64-8203-276416b8d90b/approve
+POST http://localhost:8080/api/admin/workers/0abef836-055a-438a-b10e-085616f40fc0/approve
 Content-Type: application/json
 Authorization: Bearer {{auth_token}}
 
