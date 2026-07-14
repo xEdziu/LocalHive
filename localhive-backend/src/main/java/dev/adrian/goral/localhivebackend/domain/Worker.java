@@ -1,6 +1,8 @@
 package dev.adrian.goral.localhivebackend.domain;
 
-import dev.adrian.goral.localhivebackend.domain.enums.WorkerStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.proxy.HibernateProxy;
@@ -45,8 +47,16 @@ public class Worker {
     private String gpuName;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
-    private WorkerStatus status;
+    @Column(name = "approval_status", nullable = false)
+    private WorkerApprovalStatus approvalStatus;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "connection_status", nullable = false)
+    private WorkerConnectionStatus connectionStatus;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "availability_status", nullable = false)
+    private WorkerAvailabilityStatus availabilityStatus;
 
     @Column(name = "api_key_hash")
     private String apiKeyHash;

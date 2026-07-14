@@ -43,7 +43,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("1");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("2");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -52,11 +52,11 @@ class LocalhiveBackendApplicationTests {
                     .doesNotContain("localhost:5432");
         }
 
-        Integer appliedBaselineCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version = '1' and success = true",
+        Integer appliedMigrationCount = jdbcTemplate.queryForObject(
+                "select count(*) from flyway_schema_history where version in ('1', '2') and success = true",
                 Integer.class
         );
-        assertThat(appliedBaselineCount).isEqualTo(1);
+        assertThat(appliedMigrationCount).isEqualTo(2);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -71,5 +71,28 @@ class LocalhiveBackendApplicationTests {
                 "game_templates",
                 "server_instances"
         );
+
+        List<String> workerColumns = jdbcTemplate.queryForList(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'workers'",
+                String.class
+        );
+        assertThat(workerColumns)
+                .contains("approval_status", "connection_status", "availability_status")
+                .doesNotContain("status");
+
+        List<String> workerCheckConstraints = jdbcTemplate.queryForList("""
+                select constraint_name
+                from information_schema.table_constraints
+                where table_schema = 'public'
+                  and table_name = 'workers'
+                  and constraint_type = 'CHECK'
+                """, String.class);
+        assertThat(workerCheckConstraints)
+                .contains(
+                        "workers_approval_status_check",
+                        "workers_connection_status_check",
+                        "workers_availability_status_check"
+                )
+                .doesNotContain("workers_status_check");
     }
 }

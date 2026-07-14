@@ -1,6 +1,7 @@
 package dev.adrian.goral.localhivebackend.service;
 
-import dev.adrian.goral.localhivebackend.domain.enums.WorkerStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,8 +33,9 @@ public class WorkerHeartbeatMonitor {
         LocalDateTime cutoffTime = LocalDateTime.now().minusSeconds(offlineTimeoutSeconds);
 
         int updated = workerRepository.markInactiveWorkersOffline(
-                WorkerStatus.ACTIVE,
-                WorkerStatus.OFFLINE,
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerConnectionStatus.OFFLINE,
                 cutoffTime
         );
 

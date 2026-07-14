@@ -1,6 +1,7 @@
 package dev.adrian.goral.localhivebackend.service;
 
 import dev.adrian.goral.localhivebackend.domain.Worker;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,8 +33,13 @@ public class WorkerAuthService {
                     return new IllegalArgumentException("Worker not found");
                 });
 
+        if (worker.getApprovalStatus() != WorkerApprovalStatus.APPROVED) {
+            log.warn("Worker verification failed: Worker {} is not approved", workerId);
+            throw new IllegalArgumentException("Worker has not been approved yet");
+        }
+
         if (worker.getApiKeyHash() == null) {
-            log.warn("Worker verification failed: Worker {} has no API key hash (not approved)", workerId);
+            log.warn("Worker verification failed: Worker {} has no API key hash", workerId);
             throw new IllegalArgumentException("Worker has not been approved yet");
         }
 

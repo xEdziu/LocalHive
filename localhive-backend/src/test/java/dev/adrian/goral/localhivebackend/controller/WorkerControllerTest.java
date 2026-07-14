@@ -2,7 +2,9 @@ package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.config.SecurityConfig;
 import dev.adrian.goral.localhivebackend.domain.Worker;
-import dev.adrian.goral.localhivebackend.domain.enums.WorkerStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.security.JwtService;
@@ -383,6 +385,31 @@ class WorkerControllerTest {
     }
 
     @Test
+    @DisplayName("Should return 401 when pending worker attempts authenticated worker API")
+    void shouldReturnUnauthorizedWhenPendingWorkerAttemptsAuthenticatedApi() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+        String apiKey = "worker-api-key";
+        String apiKeyHash = "hashed-api-key";
+
+        when(workerRepository.findById(workerId)).thenReturn(Optional.of(pendingWorker(workerId, apiKeyHash)));
+
+        // When + Then
+        mockMvc.perform(patch("/api/workers/{workerId}/allocation", workerId)
+                        .header("X-API-KEY", apiKey)
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(java.util.Map.of("sharedRamMb", 8192))))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().string("Invalid API Key"));
+
+        verify(passwordEncoder, never()).matches(anyString(), anyString());
+        verify(workerRegistryService, never()).updateWorkerAllocation(any(), any());
+    }
+
+    @Test
     @DisplayName("Should return 200 when heartbeat request is valid with pauseEnabled and sharedRamMb")
     void shouldReturnOkWhenHeartbeatIsValid() throws Exception {
         // Given
@@ -601,7 +628,7 @@ class WorkerControllerTest {
     }
 
     @Test
-    @DisplayName("Should recover offline worker to active status when heartbeat received")
+    @DisplayName("Should allow heartbeat for approved offline worker")
     void shouldRecoverWorkerFromOfflineStatusWhenHeartbeatReceived() throws Exception {
         // Given
         when(setupService.isSetupRequired()).thenReturn(false);
@@ -619,7 +646,9 @@ class WorkerControllerTest {
                 .sharedRamMb(4096)
                 .cpuCores(16)
                 .gpuName("RTX 5080")
-                .status(WorkerStatus.OFFLINE)
+                .approvalStatus(WorkerApprovalStatus.APPROVED)
+                .connectionStatus(WorkerConnectionStatus.OFFLINE)
+                .availabilityStatus(WorkerAvailabilityStatus.PAUSED)
                 .apiKeyHash(apiKeyHash)
                 .build();
 
@@ -686,6 +715,26 @@ class WorkerControllerTest {
                 .sharedRamMb(4096)
                 .cpuCores(16)
                 .gpuName("RTX 5080")
+                .approvalStatus(WorkerApprovalStatus.APPROVED)
+                .connectionStatus(WorkerConnectionStatus.ONLINE)
+                .availabilityStatus(WorkerAvailabilityStatus.AVAILABLE)
+                .apiKeyHash(apiKeyHash)
+                .build();
+    }
+
+    private static Worker pendingWorker(UUID workerId, String apiKeyHash) {
+        return Worker.builder()
+                .id(workerId)
+                .hostname("pending-worker")
+                .ipAddress("192.168.1.10")
+                .osType("Windows 11")
+                .totalRamMb(32768)
+                .sharedRamMb(4096)
+                .cpuCores(16)
+                .gpuName("RTX 5080")
+                .approvalStatus(WorkerApprovalStatus.PENDING)
+                .connectionStatus(WorkerConnectionStatus.OFFLINE)
+                .availabilityStatus(WorkerAvailabilityStatus.AVAILABLE)
                 .apiKeyHash(apiKeyHash)
                 .build();
     }

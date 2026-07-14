@@ -1,5 +1,7 @@
 package dev.adrian.goral.localhivebackend.security;
 
+import dev.adrian.goral.localhivebackend.domain.Worker;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -74,7 +76,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
                 if (workerOpt.isPresent()
                         && SecurityContextHolder.getContext().getAuthentication() == null
-                        && passwordEncoder.matches(apiKey, workerOpt.get().getApiKeyHash())) {
+                        && isApprovedWorkerWithMatchingApiKey(workerOpt.get(), apiKey)) {
                     SecurityContextHolder.getContext().setAuthentication(
                             new UsernamePasswordAuthenticationToken(workerId, null, List.of())
                     );
@@ -90,5 +92,11 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.getWriter().write(INVALID_API_KEY_MESSAGE);
         log.debug("Rejected request to {}: invalid API key", requestUri);
+    }
+
+    private boolean isApprovedWorkerWithMatchingApiKey(Worker worker, String apiKey) {
+        return worker.getApprovalStatus() == WorkerApprovalStatus.APPROVED
+                && worker.getApiKeyHash() != null
+                && passwordEncoder.matches(apiKey, worker.getApiKeyHash());
     }
 }

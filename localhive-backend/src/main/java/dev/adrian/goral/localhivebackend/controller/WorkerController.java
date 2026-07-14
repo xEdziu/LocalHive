@@ -24,7 +24,7 @@ public class WorkerController {
 
     /**
      * Endpoint for an Agent to request joining the cluster.
-     * The agent will be created with a PENDING status.
+     * The agent will be created as pending approval and offline until the first authenticated heartbeat.
      */
     @PostMapping("/register")
     public ResponseEntity<?> registerWorker(@Valid @RequestBody WorkerRegistrationRequestDto requestDto) {

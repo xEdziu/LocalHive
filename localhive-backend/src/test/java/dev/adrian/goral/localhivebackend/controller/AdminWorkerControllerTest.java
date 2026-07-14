@@ -2,7 +2,9 @@ package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.config.SecurityConfig;
 import dev.adrian.goral.localhivebackend.domain.Worker;
-import dev.adrian.goral.localhivebackend.domain.enums.WorkerStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.security.JwtService;
@@ -82,7 +84,9 @@ class AdminWorkerControllerTest {
                 .sharedRamMb(2048)
                 .cpuCores(8)
                 .gpuName("RTX 3070")
-                .status(WorkerStatus.ACTIVE)
+                .approvalStatus(WorkerApprovalStatus.APPROVED)
+                .connectionStatus(WorkerConnectionStatus.ONLINE)
+                .availabilityStatus(WorkerAvailabilityStatus.AVAILABLE)
                 .lastHeartbeatAt(LocalDateTime.now())
                 .build();
 
@@ -95,7 +99,9 @@ class AdminWorkerControllerTest {
                 .sharedRamMb(4096)
                 .cpuCores(16)
                 .gpuName("RTX 5080")
-                .status(WorkerStatus.PENDING)
+                .approvalStatus(WorkerApprovalStatus.PENDING)
+                .connectionStatus(WorkerConnectionStatus.OFFLINE)
+                .availabilityStatus(WorkerAvailabilityStatus.AVAILABLE)
                 .lastHeartbeatAt(null)
                 .build();
 
@@ -115,9 +121,15 @@ class AdminWorkerControllerTest {
                 .andExpect(jsonPath("$[0].sharedRamMb").value(2048))
                 .andExpect(jsonPath("$[0].cpuCores").value(8))
                 .andExpect(jsonPath("$[0].gpuName").value("RTX 3070"))
+                .andExpect(jsonPath("$[0].approvalStatus").value("APPROVED"))
+                .andExpect(jsonPath("$[0].connectionStatus").value("ONLINE"))
+                .andExpect(jsonPath("$[0].availabilityStatus").value("AVAILABLE"))
                 .andExpect(jsonPath("$[0].status").value("ACTIVE"))
                 .andExpect(jsonPath("$[1].id").value(workerId2.toString()))
                 .andExpect(jsonPath("$[1].hostname").value("worker-2"))
+                .andExpect(jsonPath("$[1].approvalStatus").value("PENDING"))
+                .andExpect(jsonPath("$[1].connectionStatus").value("OFFLINE"))
+                .andExpect(jsonPath("$[1].availabilityStatus").value("AVAILABLE"))
                 .andExpect(jsonPath("$[1].status").value("PENDING"));
 
         verify(workerRegistryService).getAllWorkers();
@@ -155,7 +167,9 @@ class AdminWorkerControllerTest {
                 .sharedRamMb(1024)
                 .cpuCores(4)
                 .gpuName(null)
-                .status(WorkerStatus.ACTIVE)
+                .approvalStatus(WorkerApprovalStatus.APPROVED)
+                .connectionStatus(WorkerConnectionStatus.ONLINE)
+                .availabilityStatus(WorkerAvailabilityStatus.AVAILABLE)
                 .lastHeartbeatAt(LocalDateTime.now().minusMinutes(5))
                 .build();
 
@@ -168,7 +182,9 @@ class AdminWorkerControllerTest {
                 .sharedRamMb(512)
                 .cpuCores(2)
                 .gpuName(null)
-                .status(WorkerStatus.OFFLINE)
+                .approvalStatus(WorkerApprovalStatus.APPROVED)
+                .connectionStatus(WorkerConnectionStatus.OFFLINE)
+                .availabilityStatus(WorkerAvailabilityStatus.PAUSED)
                 .lastHeartbeatAt(LocalDateTime.now().minusHours(2))
                 .build();
 
@@ -201,7 +217,7 @@ class AdminWorkerControllerTest {
                         .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("success"))
-                .andExpect(jsonPath("$.message").value("Worker has been approved and is now ACTIVE."));
+                .andExpect(jsonPath("$.message").value("Worker has been approved."));
 
         verify(workerRegistryService).approveWorker(workerId);
     }
@@ -227,11 +243,13 @@ class AdminWorkerControllerTest {
     }
 
     @Test
-    @DisplayName("Should return 400 when worker is not in PENDING status")
+    @DisplayName("Should return 400 when worker is not pending approval")
     void shouldReturnBadRequestWhenWorkerIsNotPending() throws Exception {
         // Given
         UUID workerId = UUID.randomUUID();
-        doThrow(new IllegalStateException("Worker is not in PENDING status. Current status: ACTIVE"))
+        doThrow(new IllegalStateException(
+                "Worker is not in PENDING approval status. Current approvalStatus: APPROVED"
+        ))
                 .when(workerRegistryService).approveWorker(workerId);
 
         // When + Then
@@ -241,17 +259,19 @@ class AdminWorkerControllerTest {
                         .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value("error"))
-                .andExpect(jsonPath("$.message").value(containsString("Worker is not in PENDING status")));
+                .andExpect(jsonPath("$.message").value(containsString("Worker is not in PENDING approval status")));
 
         verify(workerRegistryService).approveWorker(workerId);
     }
 
     @Test
-    @DisplayName("Should return 400 when attempting to approve already ACTIVE worker")
+    @DisplayName("Should return 400 when attempting to approve already approved worker")
     void shouldReturnBadRequestWhenApprovingAlreadyActiveWorker() throws Exception {
         // Given
         UUID workerId = UUID.randomUUID();
-        doThrow(new IllegalStateException("Worker is not in PENDING status. Current status: ACTIVE"))
+        doThrow(new IllegalStateException(
+                "Worker is not in PENDING approval status. Current approvalStatus: APPROVED"
+        ))
                 .when(workerRegistryService).approveWorker(workerId);
 
         // When + Then
@@ -260,17 +280,19 @@ class AdminWorkerControllerTest {
                         .with(csrf()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value("error"))
-                .andExpect(jsonPath("$.message").value(containsString("Current status: ACTIVE")));
+                .andExpect(jsonPath("$.message").value(containsString("Current approvalStatus: APPROVED")));
 
         verify(workerRegistryService).approveWorker(workerId);
     }
 
     @Test
-    @DisplayName("Should return 400 when attempting to approve OFFLINE worker")
+    @DisplayName("Should return 400 when attempting to approve a worker that is not pending approval")
     void shouldReturnBadRequestWhenApprovingOfflineWorker() throws Exception {
         // Given
         UUID workerId = UUID.randomUUID();
-        doThrow(new IllegalStateException("Worker is not in PENDING status. Current status: OFFLINE"))
+        doThrow(new IllegalStateException(
+                "Worker is not in PENDING approval status. Current approvalStatus: APPROVED"
+        ))
                 .when(workerRegistryService).approveWorker(workerId);
 
         // When + Then
@@ -279,7 +301,7 @@ class AdminWorkerControllerTest {
                         .with(csrf()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value("error"))
-                .andExpect(jsonPath("$.message").value(containsString("Current status: OFFLINE")));
+                .andExpect(jsonPath("$.message").value(containsString("Current approvalStatus: APPROVED")));
 
         verify(workerRegistryService).approveWorker(workerId);
     }

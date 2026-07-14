@@ -2,13 +2,14 @@
 
 LocalHive Master uses PostgreSQL as the application database. Flyway owns schema creation and migrations; Hibernate is configured with `ddl-auto=validate` and must not mutate the schema at runtime.
 
-The current baseline migration is:
+The current migration chain is:
 
 ```text
 localhive-backend/src/main/resources/db/migration/V1__baseline.sql
+localhive-backend/src/main/resources/db/migration/V2__split_worker_status.sql
 ```
 
-This baseline contains only the schema used by the current implementation. Task, Workload, metrics, and compute-grid tables are intentionally excluded until their domains are designed and implemented.
+The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. Task, Workload, metrics, and compute-grid tables are intentionally excluded until their domains are designed and implemented.
 
 ## Integration Tests
 
@@ -22,7 +23,7 @@ No manually running LocalHive PostgreSQL instance is required for tests. Testcon
 | --- | --- |
 | `users` | First-time setup and admin authentication users. |
 | `system_settings` | Key-value system configuration persisted by setup and application services. |
-| `workers` | Registered LocalHive Agent workers and their current lifecycle state. |
+| `workers` | Registered LocalHive Agent workers and their current approval, connection, and availability state. |
 | `agent_commands` | Commands queued for workers. |
 | `game_templates` | Game server template definitions. |
 | `server_instances` | Game server instances assigned to workers and templates. |
@@ -54,7 +55,9 @@ erDiagram
         timestamp last_heartbeat_at
         string os_type
         int shared_ram_mb
-        string status
+        string approval_status
+        string connection_status
+        string availability_status
         int total_ram_mb
     }
 
@@ -101,7 +104,19 @@ erDiagram
 | --- | --- |
 | `users` | Primary key on `id`; unique `username`. |
 | `system_settings` | Primary key on `config_key`. |
-| `workers` | Primary key on `id`; unique `hostname`; `status` check for `PENDING`, `ACTIVE`, `PAUSED`, `OFFLINE`. |
+| `workers` | Primary key on `id`; unique `hostname`; `approval_status` check for `PENDING`, `APPROVED`; `connection_status` check for `ONLINE`, `OFFLINE`; `availability_status` check for `AVAILABLE`, `PAUSED`. |
 | `agent_commands` | Primary key on `id`; foreign key to `workers(id)`; enum checks for `command_type` and `status`. |
 | `game_templates` | Primary key on `id`. |
 | `server_instances` | Primary key on `id`; foreign keys to `workers(id)` and `game_templates(id)`; enum checks for `desired_state` and `actual_state`. |
+
+## Worker State
+
+Worker state is represented by three independent persisted dimensions:
+
+| Column | Meaning | Current values |
+| --- | --- | --- |
+| `approval_status` | Whether the worker is allowed to participate in the cluster. | `PENDING`, `APPROVED` |
+| `connection_status` | Whether Master currently considers the worker reachable. | `ONLINE`, `OFFLINE` |
+| `availability_status` | Whether the worker is accepting new work. | `AVAILABLE`, `PAUSED` |
+
+Flyway V2 migrates the previous combined `workers.status` column into these dimensions and then removes the old column. Future scheduler eligibility will use these independent dimensions, but scheduler behavior is not part of the current database schema.

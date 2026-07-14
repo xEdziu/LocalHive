@@ -1,7 +1,9 @@
 package dev.adrian.goral.localhivebackend.service;
 
 import dev.adrian.goral.localhivebackend.domain.Worker;
-import dev.adrian.goral.localhivebackend.domain.enums.WorkerStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
+import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
 import dev.adrian.goral.localhivebackend.dto.WorkerHardwareUpdateRequestDto;
 import dev.adrian.goral.localhivebackend.dto.WorkerHeartbeatRequestDto;
 import dev.adrian.goral.localhivebackend.exception.DuplicateResourceException;
@@ -30,7 +32,7 @@ public class WorkerRegistryService {
 
     /**
      * Registers a new agent requesting to join the cluster (Zero Trust approach).
-     * The new worker always receives a PENDING status and requires Admin approval via UI.
+     * The new worker starts pending approval and offline until an authenticated heartbeat arrives.
      *
      * @return the saved Worker entity.
      * @throws IllegalStateException if a worker with the same hostname already exists.
@@ -47,7 +49,9 @@ public class WorkerRegistryService {
                 .sharedRamMb(sharedRamMb)
                 .cpuCores(cpuCores)
                 .gpuName(gpuName)
-                .status(WorkerStatus.PENDING) // Explicitly wait for manual approval
+                .approvalStatus(WorkerApprovalStatus.PENDING)
+                .connectionStatus(WorkerConnectionStatus.OFFLINE)
+                .availabilityStatus(WorkerAvailabilityStatus.AVAILABLE)
                 .build();
 
         try {
@@ -162,50 +166,33 @@ public class WorkerRegistryService {
     }
 
     /**
-     * Approves a worker by changing its status from PENDING to ACTIVE.
+     * Approves a worker without changing current connection or availability state.
      * @param workerId the UUID of the worker to approve.
      * @return the raw API key that the worker can use for authentication (only returned once).
      * @throws IllegalArgumentException if the worker is not found.
-     * @throws IllegalStateException if the worker is not in PENDING status.
+     * @throws IllegalStateException if the worker is not pending approval.
      */
     @Transactional
     public String approveWorker(UUID workerId) {
         Worker worker = workerRepository.findById(workerId)
                 .orElseThrow(() -> new IllegalArgumentException("Worker not found with ID: " + workerId));
 
-        if (worker.getStatus() != WorkerStatus.PENDING) {
-            throw new IllegalStateException("Worker is not in PENDING status. Current status: " + worker.getStatus());
+        if (worker.getApprovalStatus() != WorkerApprovalStatus.PENDING) {
+            throw new IllegalStateException(
+                    "Worker is not in PENDING approval status. Current approvalStatus: "
+                            + worker.getApprovalStatus()
+            );
         }
 
         String rawApiKey = generateSecureApiKey();
         String hashedApiKey = passwordEncoder.encode(rawApiKey);
 
         worker.setApiKeyHash(hashedApiKey);
-        worker.setStatus(WorkerStatus.ACTIVE);
+        worker.setApprovalStatus(WorkerApprovalStatus.APPROVED);
         workerRepository.save(worker);
-        log.info("Worker {} ({}) has been approved and is now ACTIVE.", worker.getId(), worker.getHostname());
+        log.info("Worker {} ({}) has been approved.", worker.getId(), worker.getHostname());
 
         return rawApiKey;
-    }
-
-    /**
-     * Updates the last contact time for an active agent.
-     * If the agent was marked as OFFLINE, it automatically changes status back to ACTIVE.
-     *
-     * @param workerId ID of the worker sending the heartbeat.
-     */
-    @Transactional
-    public void recordHeartbeat(UUID workerId) {
-        workerRepository.findById(workerId).ifPresentOrElse(worker -> {
-            worker.setLastHeartbeatAt(LocalDateTime.now());
-
-            // Auto-recovery: if a dead node wakes up, mark it as active again
-            if (worker.getStatus() == WorkerStatus.OFFLINE) {
-                worker.setStatus(WorkerStatus.ACTIVE);
-                log.info("Machine {} has returned online and is now ACTIVE.", worker.getHostname());
-            }
-            workerRepository.save(worker);
-        }, () -> log.warn("Received Heartbeat from an unknown Worker ID: {}", workerId));
     }
 
     @Transactional
@@ -216,22 +203,23 @@ public class WorkerRegistryService {
             throw new IllegalStateException("sharedRamMb cannot be greater than totalRamMb");
         }
 
-        WorkerStatus newStatus = request.pauseEnabled()
-                ? WorkerStatus.PAUSED
-                : WorkerStatus.ACTIVE;
+        WorkerAvailabilityStatus newAvailability = request.pauseEnabled()
+                ? WorkerAvailabilityStatus.PAUSED
+                : WorkerAvailabilityStatus.AVAILABLE;
 
-        if (worker.getStatus() == WorkerStatus.OFFLINE) {
-            log.info("Machine {} has returned online and is now {}.", worker.getHostname(), newStatus);
+        if (worker.getConnectionStatus() == WorkerConnectionStatus.OFFLINE) {
+            log.info("Machine {} has returned online and is now {}.", worker.getHostname(), newAvailability);
         }
 
         worker.setLastHeartbeatAt(LocalDateTime.now());
-        worker.setStatus(newStatus);
+        worker.setConnectionStatus(WorkerConnectionStatus.ONLINE);
+        worker.setAvailabilityStatus(newAvailability);
         worker.setSharedRamMb(request.sharedRamMb());
 
         workerRepository.save(worker);
 
-        log.info("Heartbeat processed for worker {} - status: {}, sharedRamMb: {}",
-                workerId, newStatus, request.sharedRamMb());
+        log.info("Heartbeat processed for worker {} - connection: {}, availability: {}, sharedRamMb: {}",
+                workerId, WorkerConnectionStatus.ONLINE, newAvailability, request.sharedRamMb());
     }
 
     private Worker findWorkerOrThrow(UUID workerId) {

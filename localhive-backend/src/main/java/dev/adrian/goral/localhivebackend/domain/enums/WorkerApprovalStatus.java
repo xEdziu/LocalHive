@@ -1,8 +1,6 @@
 package dev.adrian.goral.localhivebackend.domain.enums;
 
-public enum WorkerStatus {
+public enum WorkerApprovalStatus {
     PENDING,
-    ACTIVE,
-    PAUSED,
-    OFFLINE
+    APPROVED
 }

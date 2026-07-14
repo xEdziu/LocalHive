@@ -37,7 +37,7 @@ public class AdminWorkerController {
     }
 
     /**
-     * Changes a worker's status from PENDING to ACTIVE.
+     * Approves a pending worker without changing connection or availability state.
      */
     @PostMapping("/{workerId}/approve")
     public ResponseEntity<?> approveWorker(@PathVariable UUID workerId) {
@@ -48,7 +48,7 @@ public class AdminWorkerController {
 
             return ResponseEntity.ok(Map.of(
                     "status", "success",
-                    "message", "Worker has been approved and is now ACTIVE.",
+                    "message", "Worker has been approved.",
                     "apiKey", rawApiKey
             ));
 
@@ -56,7 +56,7 @@ public class AdminWorkerController {
             // Catches the "Worker not found" error and routes it to our GlobalExceptionHandler as a 404
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
         } catch (IllegalStateException e) {
-            // Catches the "Worker is not PENDING" error and routes it as a 400 Bad Request
+            // Catches the "Worker is not pending approval" error and routes it as a 400 Bad Request
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
         }
     }
