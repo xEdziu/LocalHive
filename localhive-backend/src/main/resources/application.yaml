@@ -14,9 +14,9 @@ spring:
 
   # Hibernate (ORM)
   jpa:
-    # Todo: after thesis defense, change to 'validate' and use Flyway/Liquibase for schema management.
+    # Flyway manages schema changes. Hibernate validates entity mappings against the migrated schema.
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
 
     show-sql: false
     properties:
