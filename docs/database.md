@@ -10,6 +10,12 @@ localhive-backend/src/main/resources/db/migration/V1__baseline.sql
 
 This baseline contains only the schema used by the current implementation. Task, Workload, metrics, and compute-grid tables are intentionally excluded until their domains are designed and implemented.
 
+## Integration Tests
+
+Database integration tests use Testcontainers PostgreSQL with the explicit `postgres:16.2-alpine` image. Docker Engine must be available when running the full Maven test suite.
+
+No manually running LocalHive PostgreSQL instance is required for tests. Testcontainers provides a fresh PostgreSQL instance with a dynamic JDBC URL, Flyway initializes it from the migration set, and Hibernate validates the migrated schema with `ddl-auto=validate`.
+
 ## Current Tables
 
 | Table | Purpose |
