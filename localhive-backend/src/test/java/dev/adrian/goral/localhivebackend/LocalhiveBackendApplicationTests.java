@@ -14,8 +14,10 @@ import org.testcontainers.utility.DockerImageName;
 import javax.sql.DataSource;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @Testcontainers
 @SpringBootTest
@@ -43,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("2");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("3");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -53,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(2);
+        assertThat(appliedMigrationCount).isEqualTo(3);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -69,7 +71,9 @@ class LocalhiveBackendApplicationTests {
                 "workers",
                 "agent_commands",
                 "game_templates",
-                "server_instances"
+                "server_instances",
+                "work_definitions",
+                "work_definition_versions"
         );
 
         List<String> workerColumns = jdbcTemplate.queryForList(
@@ -94,5 +98,38 @@ class LocalhiveBackendApplicationTests {
                         "workers_availability_status_check"
                 )
                 .doesNotContain("workers_status_check");
+    }
+
+    @Test
+    void workDefinitionLogicalIdentifierConstraintRequiresNamespacedIdentifier() {
+        jdbcTemplate.update("""
+                insert into work_definitions (
+                    id,
+                    logical_identifier,
+                    work_type,
+                    source_type,
+                    created_at
+                ) values (?, ?, ?, ?, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                "localhive.constraint-valid",
+                "TASK",
+                "LOCAL"
+        );
+
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into work_definitions (
+                    id,
+                    logical_identifier,
+                    work_type,
+                    source_type,
+                    created_at
+                ) values (?, ?, ?, ?, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                "minecraft",
+                "TASK",
+                "LOCAL"
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 }

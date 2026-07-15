@@ -25,7 +25,7 @@ class WorkerStatusMigrationTest {
     static final PostgreSQLContainer postgres = new PostgreSQLContainer(POSTGRES_IMAGE);
 
     @Test
-    @DisplayName("V2 deterministically migrates historical worker status values")
+    @DisplayName("V2 deterministically migrates historical worker status values through the current migration chain")
     void shouldMigrateHistoricalWorkerStatusValues() throws SQLException {
         flyway("1").migrate();
 
@@ -39,7 +39,7 @@ class WorkerStatusMigrationTest {
         Flyway flyway = flyway(null);
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("2");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("3");
 
         try (Connection connection = connection()) {
             assertWorkerState(connection, "pending-worker", "PENDING", "OFFLINE", "AVAILABLE");
