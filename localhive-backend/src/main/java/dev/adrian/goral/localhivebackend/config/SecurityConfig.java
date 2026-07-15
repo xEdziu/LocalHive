@@ -1,8 +1,10 @@
 package dev.adrian.goral.localhivebackend.config;
 
 import dev.adrian.goral.localhivebackend.security.ApiKeyAuthenticationFilter;
+import dev.adrian.goral.localhivebackend.security.ApiErrorResponseWriter;
 import dev.adrian.goral.localhivebackend.security.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationProvider;
@@ -21,6 +23,7 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthFilter;
     private final AuthenticationProvider authenticationProvider;
     private final ApiKeyAuthenticationFilter apiKeyAuthFilter;
+    private final ApiErrorResponseWriter errorResponseWriter;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) {
@@ -35,6 +38,21 @@ public class SecurityConfig {
                 // Strictly stateless architecture
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+
+                .exceptionHandling(exception -> exception
+                        .authenticationEntryPoint((request, response, authException) ->
+                                errorResponseWriter.write(
+                                        response,
+                                        HttpStatus.UNAUTHORIZED,
+                                        "Authentication failed."
+                                ))
+                        .accessDeniedHandler((request, response, accessDeniedException) ->
+                                errorResponseWriter.write(
+                                        response,
+                                        HttpStatus.FORBIDDEN,
+                                        "Access denied."
+                                ))
+                )
 
                 // Configure provider and wire JWT filter into the pipeline
                 .authenticationProvider(authenticationProvider)

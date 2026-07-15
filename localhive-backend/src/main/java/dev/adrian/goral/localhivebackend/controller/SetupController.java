@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Map;
 
@@ -38,10 +39,7 @@ public class SetupController {
         } catch (IllegalStateException e) {
             // Catches the case where someone tries to run setup on an already configured system
             log.warn("Setup attempt failed: {}", e.getMessage());
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
-                    "status", "error",
-                    "message", e.getMessage()
-            ));
+            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
         }
     }
 

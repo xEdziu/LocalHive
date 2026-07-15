@@ -3,6 +3,7 @@ package dev.adrian.goral.localhivebackend.controller;
 import dev.adrian.goral.localhivebackend.config.SecurityConfig;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
+import dev.adrian.goral.localhivebackend.security.ApiErrorResponseWriter;
 import dev.adrian.goral.localhivebackend.security.JwtService;
 import dev.adrian.goral.localhivebackend.service.SetupService;
 import org.junit.jupiter.api.DisplayName;
@@ -26,10 +27,11 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(SetupController.class)
-@Import({SecurityConfig.class, GlobalExceptionHandler.class})
+@Import({SecurityConfig.class, GlobalExceptionHandler.class, ApiErrorResponseWriter.class})
 class SetupControllerTest {
 
     @Autowired
@@ -54,6 +56,52 @@ class SetupControllerTest {
     private PasswordEncoder passwordEncoder;
 
     @Test
+    @DisplayName("Should return setup status before setup is completed")
+    void shouldReturnSetupStatusBeforeSetupIsCompleted() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(true);
+
+        // When + Then
+        mockMvc.perform(get("/api/setup/status")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.requiresSetup").value(true));
+    }
+
+    @Test
+    @DisplayName("Should return setup status after setup is completed")
+    void shouldReturnSetupStatusAfterSetupIsCompleted() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        // When + Then
+        mockMvc.perform(get("/api/setup/status")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.requiresSetup").value(false));
+    }
+
+    @Test
+    @DisplayName("Should allow setup submission before setup is completed")
+    void shouldAllowSetupSubmissionBeforeSetupIsCompleted() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(true);
+
+        // When + Then
+        mockMvc.perform(post("/api/setup")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(validSetupPayload())))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("success"));
+
+        verify(setupService).completeFirstTimeSetup("Admin_01", "StrongPassword123!");
+    }
+
+    @Test
     @DisplayName("Should return 409 when setup endpoint is locked by interceptor")
     void shouldReturnConflictWhenSetupEndpointIsLockedByInterceptor() throws Exception {
         // Given
@@ -65,8 +113,10 @@ class SetupControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonMapper.writeValueAsString(validSetupPayload())))
                 .andExpect(status().isConflict())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status").value("error"))
-                .andExpect(jsonPath("$.message").value("System is already configured. Setup wizard is locked."));
+                .andExpect(jsonPath("$.message").value("System is already configured. Setup wizard is locked."))
+                .andExpect(jsonPath("$.timestamp").exists());
 
         verify(setupService, never()).completeFirstTimeSetup(anyString(), anyString());
     }
@@ -153,8 +203,10 @@ class SetupControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonMapper.writeValueAsString(validSetupPayload())))
                 .andExpect(status().isConflict())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status").value("error"))
-                .andExpect(jsonPath("$.message").value("System is already configured. Cannot run setup again."));
+                .andExpect(jsonPath("$.message").value("System is already configured. Cannot run setup again."))
+                .andExpect(jsonPath("$.timestamp").exists());
     }
 
     @Test
@@ -165,10 +217,12 @@ class SetupControllerTest {
 
         // When + Then
         mockMvc.perform(get("/api/setup/status")
-                        .accept(MediaType.APPLICATION_JSON))
+                .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isInternalServerError())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status").value("error"))
-                .andExpect(jsonPath("$.message").value("Internal configuration check failed."));
+                .andExpect(jsonPath("$.message").value("An unexpected internal server error occurred."))
+                .andExpect(jsonPath("$.timestamp").exists());
     }
 
     private static java.util.Map<String, Object> validSetupPayload() {

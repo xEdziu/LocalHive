@@ -7,6 +7,7 @@ import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
+import dev.adrian.goral.localhivebackend.security.ApiErrorResponseWriter;
 import dev.adrian.goral.localhivebackend.security.JwtService;
 import dev.adrian.goral.localhivebackend.service.SetupService;
 import dev.adrian.goral.localhivebackend.service.WorkerRegistryService;
@@ -17,6 +18,8 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -27,6 +30,7 @@ import java.util.UUID;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.not;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
@@ -35,11 +39,12 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(AdminWorkerController.class)
-@Import({SecurityConfig.class, GlobalExceptionHandler.class})
+@Import({SecurityConfig.class, GlobalExceptionHandler.class, ApiErrorResponseWriter.class})
 class AdminWorkerControllerTest {
 
     @Autowired
@@ -63,8 +68,159 @@ class AdminWorkerControllerTest {
     @MockitoBean
     private PasswordEncoder passwordEncoder;
 
+    @MockitoBean
+    private UserDetailsService userDetailsService;
+
     private static final String ADMIN_USER = "admin";
     private static final String ADMIN_ROLE = "ADMIN";
+
+    @Test
+    @DisplayName("Should return 401 JSON when admin endpoint is called without JWT")
+    void shouldReturnUnauthorizedJsonWhenAdminEndpointHasNoJwt() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        // When + Then
+        mockMvc.perform(get("/api/admin/workers")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists());
+    }
+
+    @Test
+    @DisplayName("Should return 401 JSON when admin endpoint receives non-Bearer Authorization header")
+    void shouldReturnUnauthorizedJsonWhenAdminEndpointReceivesWrongAuthorizationScheme() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        // When + Then
+        mockMvc.perform(get("/api/admin/workers")
+                        .header("Authorization", "Basic not-a-jwt")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists());
+    }
+
+    @Test
+    @DisplayName("Should return 401 JSON when admin endpoint receives blank Bearer token")
+    void shouldReturnUnauthorizedJsonWhenAdminEndpointReceivesBlankBearerToken() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        // When + Then
+        mockMvc.perform(get("/api/admin/workers")
+                        .header("Authorization", "Bearer ")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists());
+    }
+
+    @Test
+    @DisplayName("Should return 401 JSON when admin endpoint receives malformed JWT")
+    void shouldReturnUnauthorizedJsonWhenAdminEndpointReceivesMalformedJwt() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+        when(jwtService.extractUsername("malformed-token"))
+                .thenThrow(new IllegalArgumentException("Malformed token"));
+
+        // When + Then
+        mockMvc.perform(get("/api/admin/workers")
+                        .header("Authorization", "Bearer malformed-token")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(content().string(not(containsString("malformed-token"))));
+    }
+
+    @Test
+    @DisplayName("Should return 401 JSON when admin endpoint receives JWT with invalid signature")
+    void shouldReturnUnauthorizedJsonWhenAdminEndpointReceivesInvalidSignatureJwt() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+        when(jwtService.extractUsername("bad-signature-token"))
+                .thenThrow(new SecurityException("Invalid signature"));
+
+        // When + Then
+        mockMvc.perform(get("/api/admin/workers")
+                        .header("Authorization", "Bearer bad-signature-token")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(content().string(not(containsString("bad-signature-token"))));
+    }
+
+    @Test
+    @DisplayName("Should return 401 JSON when admin endpoint receives expired JWT")
+    void shouldReturnUnauthorizedJsonWhenAdminEndpointReceivesExpiredJwt() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+        when(jwtService.extractUsername("expired-token"))
+                .thenThrow(new RuntimeException("Expired JWT"));
+
+        // When + Then
+        mockMvc.perform(get("/api/admin/workers")
+                        .header("Authorization", "Bearer expired-token")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(content().string(not(containsString("expired-token"))));
+    }
+
+    @Test
+    @DisplayName("Should return 401 JSON when JWT references an unknown user")
+    void shouldReturnUnauthorizedJsonWhenJwtReferencesUnknownUser() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+        when(jwtService.extractUsername("known-shape-token")).thenReturn("missing-user");
+        when(userDetailsService.loadUserByUsername("missing-user"))
+                .thenThrow(new UsernameNotFoundException("User not found: missing-user"));
+
+        // When + Then
+        mockMvc.perform(get("/api/admin/workers")
+                        .header("Authorization", "Bearer known-shape-token")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(content().string(not(containsString("known-shape-token"))));
+    }
+
+    @Test
+    @DisplayName("Should return 403 JSON when authenticated user is not an admin")
+    void shouldReturnForbiddenJsonWhenAuthenticatedUserIsNotAdmin() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        // When + Then
+        mockMvc.perform(get("/api/admin/workers")
+                        .with(user("operator").roles("USER"))
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isForbidden())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Access denied."))
+                .andExpect(jsonPath("$.timestamp").exists());
+    }
 
     // ==================== GET /api/admin/workers ====================
 

@@ -4,6 +4,7 @@ import dev.adrian.goral.localhivebackend.config.SecurityConfig;
 import dev.adrian.goral.localhivebackend.domain.User;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
+import dev.adrian.goral.localhivebackend.security.ApiErrorResponseWriter;
 import dev.adrian.goral.localhivebackend.security.JwtService;
 import dev.adrian.goral.localhivebackend.service.SetupService;
 import org.junit.jupiter.api.DisplayName;
@@ -14,6 +15,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -33,7 +35,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(AuthController.class)
-@Import({SecurityConfig.class, GlobalExceptionHandler.class})
+@Import({SecurityConfig.class, GlobalExceptionHandler.class, ApiErrorResponseWriter.class})
 class AuthControllerTest {
     @Autowired
     private MockMvc mvc;
@@ -137,6 +139,28 @@ class AuthControllerTest {
     }
 
     @Test
+    @DisplayName("POST /api/auth/login - bad credentials -> 401 JSON")
+    void login_badCredentials_returnsUnauthorizedJson() throws Exception {
+        // Given
+        given(authenticationManager.authenticate(any(UsernamePasswordAuthenticationToken.class)))
+                .willThrow(new BadCredentialsException("Bad credentials"));
+
+        LoginPayload payload = new LoginPayload("jdoe", "wrong-password");
+
+        // When / Then
+        mvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(payload)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists());
+
+        verify(jwtService, never()).generateToken(any(), anyString(), anyString());
+    }
+
+    @Test
     @DisplayName("POST /api/auth/login - empty authorities -> 500 INTERNAL SERVER ERROR (Fail-Secure)")
     void login_emptyAuthorities_throwsResponseStatusException() throws Exception {
         // Given
@@ -158,10 +182,10 @@ class AuthControllerTest {
 
         // When / Then
         mvc.perform(post("/api/auth/login")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(jsonMapper.writeValueAsString(payload)))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(jsonMapper.writeValueAsString(payload)))
                 .andExpect(status().isInternalServerError())
-                .andExpect(jsonPath("$.message").value("Authenticated user has no granted authorities"));
+                .andExpect(jsonPath("$.message").value("An unexpected internal server error occurred."));
 
         verify(jwtService, never()).generateToken(any(), anyString(), anyString());
     }

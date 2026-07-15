@@ -6,6 +6,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -25,13 +27,45 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(ResponseStatusException.class)
     public ResponseEntity<ErrorResponseDto> handleResponseStatusException(ResponseStatusException ex) {
+        if (ex.getStatusCode().is5xxServerError()) {
+            log.error("ResponseStatusException mapped to server error: {}", ex.getReason(), ex);
+        }
+
+        String message = ex.getReason() == null || ex.getReason().isBlank()
+                ? "Request failed."
+                : ex.getReason();
+
         ErrorResponseDto errorResponse = ErrorResponseDto.builder()
                 .status("error")
-                .message(ex.getReason()) // Gets the clean message without the HTTP status code prefix
+                .message(ex.getStatusCode().is5xxServerError()
+                        ? "An unexpected internal server error occurred."
+                        : message)
                 .timestamp(LocalDateTime.now())
                 .build();
 
         return new ResponseEntity<>(errorResponse, ex.getStatusCode());
+    }
+
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<ErrorResponseDto> handleAuthenticationException(AuthenticationException ex) {
+        ErrorResponseDto errorResponse = ErrorResponseDto.builder()
+                .status("error")
+                .message("Authentication failed.")
+                .timestamp(LocalDateTime.now())
+                .build();
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.UNAUTHORIZED);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponseDto> handleAccessDeniedException(AccessDeniedException ex) {
+        ErrorResponseDto errorResponse = ErrorResponseDto.builder()
+                .status("error")
+                .message("Access denied.")
+                .timestamp(LocalDateTime.now())
+                .build();
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.FORBIDDEN);
     }
 
     /**

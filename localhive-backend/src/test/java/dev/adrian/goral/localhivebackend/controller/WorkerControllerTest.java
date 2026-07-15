@@ -7,6 +7,7 @@ import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
 import dev.adrian.goral.localhivebackend.exception.GlobalExceptionHandler;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
+import dev.adrian.goral.localhivebackend.security.ApiErrorResponseWriter;
 import dev.adrian.goral.localhivebackend.security.JwtService;
 import dev.adrian.goral.localhivebackend.service.SetupService;
 import dev.adrian.goral.localhivebackend.service.WorkerRegistryService;
@@ -26,6 +27,8 @@ import tools.jackson.databind.json.JsonMapper;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -34,7 +37,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(WorkerController.class)
-@Import({SecurityConfig.class, GlobalExceptionHandler.class})
+@Import({SecurityConfig.class, GlobalExceptionHandler.class, ApiErrorResponseWriter.class})
 class WorkerControllerTest {
 
     @Autowired
@@ -47,20 +50,22 @@ class WorkerControllerTest {
     private WorkerRegistryService workerRegistryService;
 
     @Test
-    @DisplayName("Should return 403 when worker API is called while setup is still required")
-    void shouldReturnForbiddenWhenSystemIsInFirstTimeSetupMode() throws Exception {
+    @DisplayName("Should return 423 when worker API is called while setup is still required")
+    void shouldReturnLockedWhenSystemIsInFirstTimeSetupMode() throws Exception {
         // Given
         when(setupService.isSetupRequired()).thenReturn(true);
 
         // When + Then
         mockMvc.perform(post("/api/workers/register")
-                        .with(csrf())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(jsonMapper.writeValueAsString(validWorkerRegistrationPayload())))
-                .andExpect(status().isForbidden())
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(jsonMapper.writeValueAsString(validWorkerRegistrationPayload())))
+                .andExpect(status().is(423))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status").value("error"))
                 .andExpect(jsonPath("$.message")
-                        .value("System is locked. Please complete the First-Time Config wizard."));
+                        .value("System is locked. Please complete the First-Time Config wizard."))
+                .andExpect(jsonPath("$.timestamp").exists());
 
         verify(workerRegistryService, never()).registerNewWorker(
                 anyString(), anyString(), anyString(), anyInt(), anyInt(), anyInt(), any()
@@ -374,12 +379,43 @@ class WorkerControllerTest {
 
         // When + Then
         mockMvc.perform(patch("/api/workers/{workerId}/allocation", workerId)
+                .header("X-API-KEY", apiKey)
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(jsonMapper.writeValueAsString(java.util.Map.of("sharedRamMb", 8192))))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Worker authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(content().string(not(containsString(apiKey))));
+
+        verify(workerRegistryService, never()).updateWorkerAllocation(any(), any());
+    }
+
+    @Test
+    @DisplayName("Should return 401 JSON when worker is unknown")
+    void shouldReturnUnauthorizedJsonWhenWorkerIsUnknown() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+        String apiKey = "worker-api-key";
+
+        when(workerRepository.findById(workerId)).thenReturn(Optional.empty());
+
+        // When + Then
+        mockMvc.perform(patch("/api/workers/{workerId}/allocation", workerId)
                         .header("X-API-KEY", apiKey)
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonMapper.writeValueAsString(java.util.Map.of("sharedRamMb", 8192))))
                 .andExpect(status().isUnauthorized())
-                .andExpect(content().string("Invalid API Key"));
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Worker authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(content().string(not(containsString(apiKey))));
 
         verify(workerRegistryService, never()).updateWorkerAllocation(any(), any());
     }
@@ -398,12 +434,44 @@ class WorkerControllerTest {
 
         // When + Then
         mockMvc.perform(patch("/api/workers/{workerId}/allocation", workerId)
+                .header("X-API-KEY", apiKey)
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(jsonMapper.writeValueAsString(java.util.Map.of("sharedRamMb", 8192))))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Worker authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(content().string(not(containsString(apiKey))));
+
+        verify(passwordEncoder, never()).matches(anyString(), anyString());
+        verify(workerRegistryService, never()).updateWorkerAllocation(any(), any());
+    }
+
+    @Test
+    @DisplayName("Should return 401 JSON when approved worker has no stored API key hash")
+    void shouldReturnUnauthorizedJsonWhenApprovedWorkerHasNoStoredApiKeyHash() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+        String apiKey = "worker-api-key";
+
+        when(workerRepository.findById(workerId)).thenReturn(Optional.of(authenticatedWorker(workerId, null)));
+
+        // When + Then
+        mockMvc.perform(patch("/api/workers/{workerId}/allocation", workerId)
                         .header("X-API-KEY", apiKey)
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonMapper.writeValueAsString(java.util.Map.of("sharedRamMb", 8192))))
                 .andExpect(status().isUnauthorized())
-                .andExpect(content().string("Invalid API Key"));
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Worker authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(content().string(not(containsString(apiKey))));
 
         verify(passwordEncoder, never()).matches(anyString(), anyString());
         verify(workerRegistryService, never()).updateWorkerAllocation(any(), any());
@@ -459,11 +527,68 @@ class WorkerControllerTest {
 
         // When + Then
         mockMvc.perform(post("/api/workers/{workerId}/heartbeat", workerId)
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(jsonMapper.writeValueAsString(heartbeatRequest)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Worker authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists());
+
+        verify(workerRegistryService, never()).handleHeartbeat(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Should return 401 JSON when heartbeat API key is blank")
+    void shouldReturnUnauthorizedWhenHeartbeatApiKeyIsBlank() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+
+        var heartbeatRequest = java.util.Map.of(
+                "pauseEnabled", false,
+                "sharedRamMb", 4096
+        );
+
+        // When + Then
+        mockMvc.perform(post("/api/workers/{workerId}/heartbeat", workerId)
+                        .header("X-API-KEY", " ")
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonMapper.writeValueAsString(heartbeatRequest)))
                 .andExpect(status().isUnauthorized())
-                .andExpect(content().string("Missing X-API-KEY header"));
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Worker authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists());
+
+        verify(workerRegistryService, never()).handleHeartbeat(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Should return 401 JSON when worker ID path segment is malformed")
+    void shouldReturnUnauthorizedWhenWorkerIdPathSegmentIsMalformed() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        var heartbeatRequest = java.util.Map.of(
+                "pauseEnabled", false,
+                "sharedRamMb", 4096
+        );
+
+        // When + Then
+        mockMvc.perform(post("/api/workers/not-a-uuid/heartbeat")
+                        .header("X-API-KEY", "worker-api-key")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(heartbeatRequest)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("Worker authentication failed."))
+                .andExpect(jsonPath("$.timestamp").exists());
 
         verify(workerRegistryService, never()).handleHeartbeat(any(), any(), any());
     }

@@ -10,6 +10,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.NonNull;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -28,8 +29,7 @@ import java.util.regex.Pattern;
 public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
     private static final String API_KEY_HEADER = "X-API-KEY";
-    private static final String MISSING_API_KEY_MESSAGE = "Missing X-API-KEY header";
-    private static final String INVALID_API_KEY_MESSAGE = "Invalid API Key";
+    private static final String WORKER_AUTHENTICATION_FAILED_MESSAGE = "Worker authentication failed.";
 
     // Public endpoints that don't require API Key authentication
     private static final List<String> PUBLIC_PATHS = List.of(
@@ -41,8 +41,11 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
     private final WorkerRepository workerRepository;
     private final PasswordEncoder passwordEncoder;
+    private final ApiErrorResponseWriter errorResponseWriter;
 
-    private static final Pattern WORKER_ID_PATTERN = Pattern.compile("/api/workers/([^/]+)/.*");
+    private static final Pattern WORKER_API_PATH_PATTERN = Pattern.compile(
+            "^/api/workers/([^/]+)/(heartbeat|allocation|spec)$"
+    );
 
     @Override
     protected void doFilterInternal(
@@ -53,45 +56,46 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
         String requestUri = request.getRequestURI();
 
-        // Allow public paths and admin endpoints (they're protected by JWT)
-        if (PUBLIC_PATHS.contains(requestUri) || requestUri.startsWith("/api/admin/")) {
+        Matcher matcher = WORKER_API_PATH_PATTERN.matcher(requestUri);
+
+        // Allow public paths, admin endpoints (protected by JWT), and non-worker-API requests.
+        if (PUBLIC_PATHS.contains(requestUri) || requestUri.startsWith("/api/admin/") || !matcher.matches()) {
             filterChain.doFilter(request, response);
             return;
         }
 
         String apiKey = request.getHeader(API_KEY_HEADER);
 
-        if (apiKey == null || apiKey.isEmpty()) {
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            response.getWriter().write(MISSING_API_KEY_MESSAGE);
+        if (apiKey == null || apiKey.isBlank()) {
+            writeUnauthorized(response);
             log.debug("Rejected request to {}: missing API key header", requestUri);
             return;
         }
 
-        Matcher matcher = WORKER_ID_PATTERN.matcher(requestUri);
-        if (matcher.find()) {
-            try {
-                UUID workerId = UUID.fromString(matcher.group(1));
-                var workerOpt = workerRepository.findById(workerId);
+        try {
+            UUID workerId = UUID.fromString(matcher.group(1));
+            var workerOpt = workerRepository.findById(workerId);
 
-                if (workerOpt.isPresent()
-                        && SecurityContextHolder.getContext().getAuthentication() == null
-                        && isApprovedWorkerWithMatchingApiKey(workerOpt.get(), apiKey)) {
-                    SecurityContextHolder.getContext().setAuthentication(
-                            new UsernamePasswordAuthenticationToken(workerId, null, List.of())
-                    );
-                    filterChain.doFilter(request, response);
-                    log.debug("Worker {} authenticated successfully for {}", workerId, requestUri);
-                    return;
-                }
-            } catch (IllegalArgumentException e) {
-                log.debug("Rejected request to {}: invalid worker ID in path", requestUri);
+            if (workerOpt.isPresent()
+                    && SecurityContextHolder.getContext().getAuthentication() == null
+                    && isApprovedWorkerWithMatchingApiKey(workerOpt.get(), apiKey)) {
+                SecurityContextHolder.getContext().setAuthentication(
+                        new UsernamePasswordAuthenticationToken(workerId, null, List.of())
+                );
+                filterChain.doFilter(request, response);
+                log.debug("Worker {} authenticated successfully for {}", workerId, requestUri);
+                return;
             }
+        } catch (IllegalArgumentException e) {
+            log.debug("Rejected request to {}: invalid worker ID in path", requestUri);
         }
 
-        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-        response.getWriter().write(INVALID_API_KEY_MESSAGE);
+        writeUnauthorized(response);
         log.debug("Rejected request to {}: invalid API key", requestUri);
+    }
+
+    private void writeUnauthorized(HttpServletResponse response) throws IOException {
+        errorResponseWriter.write(response, HttpStatus.UNAUTHORIZED, WORKER_AUTHENTICATION_FAILED_MESSAGE);
     }
 
     private boolean isApprovedWorkerWithMatchingApiKey(Worker worker, String apiKey) {
