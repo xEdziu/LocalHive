@@ -2,6 +2,7 @@ package dev.adrian.goral.localhivebackend.service.work;
 
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinition;
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinitionVersion;
+import dev.adrian.goral.localhivebackend.domain.work.ResourceRequest;
 import dev.adrian.goral.localhivebackend.domain.work.enums.DefinitionSourceType;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
 import dev.adrian.goral.localhivebackend.exception.DuplicateResourceException;
@@ -167,6 +168,7 @@ public class DefinitionManagementService {
                 content.executorId(),
                 content.executorContractVersion(),
                 content.executorConfiguration(),
+                content.defaultResourceRequest(),
                 checksum(content),
                 createdAt,
                 content.actorUserId()
@@ -185,6 +187,7 @@ public class DefinitionManagementService {
                 content.executorId(),
                 content.executorContractVersion(),
                 content.executorConfiguration(),
+                content.defaultResourceRequest(),
                 checksum(content),
                 createdAt,
                 content.actorUserId()
@@ -199,7 +202,8 @@ public class DefinitionManagementService {
                 content.description(),
                 content.executorId(),
                 content.executorContractVersion(),
-                content.executorConfiguration()
+                content.executorConfiguration(),
+                content.defaultResourceRequest()
         );
     }
 
@@ -214,6 +218,10 @@ public class DefinitionManagementService {
         JsonNode executorConfiguration = DefinitionValidation.requireObjectConfiguration(
                 command.executorConfiguration()
         ).deepCopy();
+        ResourceRequest defaultResourceRequest = Objects.requireNonNull(
+                command.defaultResourceRequest(),
+                "defaultResourceRequest must not be null."
+        );
         UUID actorUserId = DefinitionValidation.requireUserId(command.actorUserId(), "actorUserId");
 
         return new DefinitionContent(
@@ -224,6 +232,7 @@ public class DefinitionManagementService {
                 executorId,
                 command.executorContractVersion(),
                 executorConfiguration,
+                defaultResourceRequest,
                 actorUserId
         );
     }
@@ -236,6 +245,7 @@ public class DefinitionManagementService {
             String executorId,
             int executorContractVersion,
             JsonNode executorConfiguration,
+            ResourceRequest defaultResourceRequest,
             UUID actorUserId
     ) {
     }

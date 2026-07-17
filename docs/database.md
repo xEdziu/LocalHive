@@ -8,9 +8,10 @@ The current migration chain is:
 localhive-backend/src/main/resources/db/migration/V1__baseline.sql
 localhive-backend/src/main/resources/db/migration/V2__split_worker_status.sql
 localhive-backend/src/main/resources/db/migration/V3__add_work_definitions.sql
+localhive-backend/src/main/resources/db/migration/V4__add_work_instances.sql
 ```
 
-The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. V3 adds Work Definition identity and immutable version persistence. Work execution, assignment, attempts, metrics, and compute-grid runtime tables are intentionally excluded until those domains are designed and implemented.
+The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. V3 adds Work Definition identity and immutable version persistence. V4 adds Work Instance persistence, configuration overrides, and relational resource defaults/overrides. Work execution, assignment, attempts, metrics, and compute-grid runtime tables are intentionally excluded until those domains are designed and implemented.
 
 ## Integration Tests
 
@@ -30,6 +31,7 @@ No manually running LocalHive PostgreSQL instance is required for tests. Testcon
 | `server_instances` | Game server instances assigned to workers and templates. |
 | `work_definitions` | Stable logical identities for local or imported work definitions. |
 | `work_definition_versions` | Immutable content versions for work definitions, including approval state. |
+| `work_instances` | User-configured instances pinned to one immutable work definition version. |
 
 ## Entity Relationship Diagram
 
@@ -81,6 +83,9 @@ erDiagram
         UUID created_by_user_id FK
         UUID definition_id FK
         string description
+        int default_required_cpu_cores
+        boolean default_gpu_required
+        int default_required_ram_mb
         jsonb executor_configuration
         int executor_contract_version
         string executor_id
@@ -89,6 +94,19 @@ erDiagram
         timestamp reviewed_at
         UUID reviewed_by_user_id FK
         int version_number
+    }
+
+    WORK_INSTANCES {
+        UUID id PK
+        jsonb configuration_overrides
+        timestamp created_at
+        UUID definition_version_id FK
+        string display_name
+        boolean enabled
+        boolean override_gpu_required
+        int override_required_cpu_cores
+        int override_required_ram_mb
+        timestamp updated_at
     }
 
     GAME_TEMPLATES {
@@ -127,6 +145,7 @@ erDiagram
     WORKERS ||--o{ SERVER_INSTANCES : hosts
     GAME_TEMPLATES ||--o{ SERVER_INSTANCES : templates
     WORK_DEFINITIONS ||--o{ WORK_DEFINITION_VERSIONS : versions
+    WORK_DEFINITION_VERSIONS ||--o{ WORK_INSTANCES : instances
     USERS ||--o{ WORK_DEFINITION_VERSIONS : created
     USERS ||--o{ WORK_DEFINITION_VERSIONS : reviewed
 ```
@@ -142,7 +161,8 @@ erDiagram
 | `game_templates` | Primary key on `id`. |
 | `server_instances` | Primary key on `id`; foreign keys to `workers(id)` and `game_templates(id)`; enum checks for `desired_state` and `actual_state`. |
 | `work_definitions` | Primary key on `id`; unique `logical_identifier`; check for lowercase logical identifier format; enum checks for `work_type` and `source_type`. |
-| `work_definition_versions` | Primary key on `id`; unique `(definition_id, version_number)`; foreign keys to `work_definitions(id)` and creator/reviewer `users(id)`; checks for version number, executor contract version, JSON object executor configuration, lowercase SHA-256 checksum, approval status, and approval review metadata. |
+| `work_definition_versions` | Primary key on `id`; unique `(definition_id, version_number)`; foreign keys to `work_definitions(id)` and creator/reviewer `users(id)`; checks for version number, executor contract version, JSON object executor configuration, non-negative default RAM/CPU resources, lowercase SHA-256 checksum, approval status, and approval review metadata. |
+| `work_instances` | Primary key on `id`; foreign key to `work_definition_versions(id)`; checks for non-blank display name, JSON object configuration overrides, and non-negative nullable RAM/CPU resource overrides. |
 
 ## Worker State
 
@@ -163,10 +183,20 @@ Work Definition identity is split from versioned content:
 | Table | Immutable content |
 | --- | --- |
 | `work_definitions` | Logical identifier, work type, source type, optional original imported definition id, and creation timestamp. |
-| `work_definition_versions` | Version number, display name, description, executor id, executor contract version, executor configuration JSON, and content checksum. |
+| `work_definition_versions` | Version number, display name, description, executor id, executor contract version, executor configuration JSON, default resource request, and content checksum. |
 
-Version numbers are assigned by Master per definition with a unique `(definition_id, version_number)` constraint. No `latestVersionNumber`, current-version pointer, Work Instance, Work Execution, Assignment, Attempt, or runtime Task table exists in this migration.
+Version numbers are assigned by Master per definition with a unique `(definition_id, version_number)` constraint. No `latestVersionNumber`, current-version pointer, Work Execution, Assignment, Attempt, or runtime Task table exists in this migration.
 
 `executor_configuration` is stored as PostgreSQL `JSONB` and must have a JSON object root. Empty objects are valid; arrays, scalars, and JSON null are rejected by application validation and the database check constraint.
 
-The content checksum is a Master-generated lowercase hexadecimal SHA-256 string. It covers logical identifier, work type, version content fields, executor id, executor contract version, and canonicalized executor configuration. It excludes database identifiers, definition id, version number, source metadata, approval metadata, timestamps, and user ids.
+The default resource request is relational: required RAM MiB, required CPU cores, and whether GPU is required. RAM and CPU default to `0` for historical V3 rows migrated through V4 and must remain non-negative.
+
+The content checksum is a Master-generated lowercase hexadecimal SHA-256 string. It covers logical identifier, work type, version content fields, executor id, executor contract version, canonicalized executor configuration, and default resource request. It excludes database identifiers, definition id, version number, source metadata, approval metadata, timestamps, user ids, work instances, and instance overrides.
+
+## Work Instances
+
+Work Instances are user-configured instances pinned to a specific `work_definition_versions.id`. They do not point directly to `work_definitions`, and they are not automatically moved to newer versions. Any version change must be explicit and must remain inside the same Work Definition identity.
+
+`configuration_overrides` is stored as PostgreSQL `JSONB` and must have a JSON object root. Effective configuration is resolved at runtime by recursively merging the pinned version's `executor_configuration` with the instance overrides. Objects merge recursively, arrays and scalar values replace the base value, and explicit JSON null is preserved as a value.
+
+Resource overrides are stored relationally as nullable columns. A null override inherits the pinned version default, while a non-null RAM or CPU override must be greater than or equal to `0`. The `enabled` flag is only an administrative enable/disable setting; it is not a desired runtime state, assignment state, execution state, or scheduler lease.

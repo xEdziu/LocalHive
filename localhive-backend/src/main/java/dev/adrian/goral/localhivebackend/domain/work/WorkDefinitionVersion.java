@@ -2,7 +2,10 @@ package dev.adrian.goral.localhivebackend.domain.work;
 
 import dev.adrian.goral.localhivebackend.domain.work.enums.DefinitionApprovalStatus;
 import dev.adrian.goral.localhivebackend.service.work.DefinitionValidation;
+import jakarta.persistence.AttributeOverride;
+import jakarta.persistence.AttributeOverrides;
 import jakarta.persistence.Column;
+import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -61,6 +64,14 @@ public class WorkDefinitionVersion {
     @Column(name = "executor_configuration", nullable = false, columnDefinition = "jsonb", updatable = false)
     private JsonNode executorConfiguration;
 
+    @Embedded
+    @AttributeOverrides({
+            @AttributeOverride(name = "requiredRamMb", column = @Column(name = "default_required_ram_mb", nullable = false, updatable = false)),
+            @AttributeOverride(name = "requiredCpuCores", column = @Column(name = "default_required_cpu_cores", nullable = false, updatable = false)),
+            @AttributeOverride(name = "gpuRequired", column = @Column(name = "default_gpu_required", nullable = false, updatable = false))
+    })
+    private ResourceRequest defaultResourceRequest;
+
     @Column(name = "content_checksum", nullable = false, length = 64, updatable = false)
     private String contentChecksum;
 
@@ -90,6 +101,7 @@ public class WorkDefinitionVersion {
                                   String executorId,
                                   int executorContractVersion,
                                   JsonNode executorConfiguration,
+                                  ResourceRequest defaultResourceRequest,
                                   String contentChecksum,
                                   DefinitionApprovalStatus approvalStatus,
                                   LocalDateTime createdAt,
@@ -108,6 +120,10 @@ public class WorkDefinitionVersion {
         DefinitionValidation.requirePositiveExecutorContractVersion(executorContractVersion);
         this.executorContractVersion = executorContractVersion;
         this.executorConfiguration = DefinitionValidation.requireObjectConfiguration(executorConfiguration).deepCopy();
+        this.defaultResourceRequest = Objects.requireNonNull(
+                defaultResourceRequest,
+                "defaultResourceRequest must not be null."
+        );
         this.contentChecksum = Objects.requireNonNull(contentChecksum, "contentChecksum must not be null.");
         this.approvalStatus = Objects.requireNonNull(approvalStatus, "approvalStatus must not be null.");
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt must not be null.");
@@ -124,6 +140,7 @@ public class WorkDefinitionVersion {
                                                     String executorId,
                                                     int executorContractVersion,
                                                     JsonNode executorConfiguration,
+                                                    ResourceRequest defaultResourceRequest,
                                                     String contentChecksum,
                                                     LocalDateTime createdAt,
                                                     UUID createdByUserId) {
@@ -135,6 +152,7 @@ public class WorkDefinitionVersion {
                 executorId,
                 executorContractVersion,
                 executorConfiguration,
+                defaultResourceRequest,
                 contentChecksum,
                 DefinitionApprovalStatus.APPROVED,
                 createdAt,
@@ -152,6 +170,7 @@ public class WorkDefinitionVersion {
                                                        String executorId,
                                                        int executorContractVersion,
                                                        JsonNode executorConfiguration,
+                                                       ResourceRequest defaultResourceRequest,
                                                        String contentChecksum,
                                                        LocalDateTime createdAt,
                                                        UUID createdByUserId) {
@@ -163,6 +182,7 @@ public class WorkDefinitionVersion {
                 executorId,
                 executorContractVersion,
                 executorConfiguration,
+                defaultResourceRequest,
                 contentChecksum,
                 DefinitionApprovalStatus.PENDING,
                 createdAt,

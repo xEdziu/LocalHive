@@ -1,6 +1,7 @@
 package dev.adrian.goral.localhivebackend.service.work;
 
 import dev.adrian.goral.localhivebackend.domain.User;
+import dev.adrian.goral.localhivebackend.domain.work.ResourceRequest;
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinition;
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinitionVersion;
 import dev.adrian.goral.localhivebackend.domain.work.enums.DefinitionApprovalStatus;
@@ -82,6 +83,26 @@ class DefinitionManagementServiceTest {
         assertThat(version.getReviewedAt()).isEqualTo(version.getCreatedAt());
         assertThat(version.getReviewedByUserId()).isEqualTo(adminUserId);
         assertThat(version.getContentChecksum()).matches("^[0-9a-f]{64}$");
+    }
+
+    @Test
+    void shouldPersistDefaultResourceRequestAsVersionContent() {
+        UUID adminUserId = createUser("resource-admin").getId();
+
+        WorkDefinitionVersion version = definitionManagementService.createLocalDefinition(command(
+                "localhive.resource-defaults",
+                WorkType.TASK,
+                "Resource Defaults",
+                null,
+                "localhive.resource-defaults",
+                1,
+                config("enabled", true),
+                ResourceRequest.of(2048, 2, true),
+                adminUserId
+        ));
+
+        assertThat(version.getDefaultResourceRequest())
+                .isEqualTo(ResourceRequest.of(2048, 2, true));
     }
 
     @Test
@@ -322,6 +343,7 @@ class DefinitionManagementServiceTest {
         JsonNode firstConfiguration = nestedConfigInOrder("b", "a", List.of(1, 2));
         JsonNode secondConfiguration = nestedConfigInOrder("a", "b", List.of(1, 2));
         JsonNode reorderedArrayConfiguration = nestedConfigInOrder("a", "b", List.of(2, 1));
+        ResourceRequest defaultResources = ResourceRequest.of(1024, 2, false);
 
         String firstChecksum = checksumService.calculateChecksum(
                 "localhive.checksum",
@@ -330,7 +352,8 @@ class DefinitionManagementServiceTest {
                 "same content",
                 "localhive.checksum",
                 1,
-                firstConfiguration
+                firstConfiguration,
+                defaultResources
         );
         String secondChecksum = checksumService.calculateChecksum(
                 "localhive.checksum",
@@ -339,7 +362,8 @@ class DefinitionManagementServiceTest {
                 "same content",
                 "localhive.checksum",
                 1,
-                secondConfiguration
+                secondConfiguration,
+                defaultResources
         );
         String reorderedArrayChecksum = checksumService.calculateChecksum(
                 "localhive.checksum",
@@ -348,12 +372,24 @@ class DefinitionManagementServiceTest {
                 "same content",
                 "localhive.checksum",
                 1,
-                reorderedArrayConfiguration
+                reorderedArrayConfiguration,
+                defaultResources
+        );
+        String changedResourceChecksum = checksumService.calculateChecksum(
+                "localhive.checksum",
+                WorkType.TASK,
+                "Checksum",
+                "same content",
+                "localhive.checksum",
+                1,
+                firstConfiguration,
+                ResourceRequest.of(2048, 2, false)
         );
 
         assertThat(firstChecksum).matches("^[0-9a-f]{64}$");
         assertThat(secondChecksum).isEqualTo(firstChecksum);
         assertThat(reorderedArrayChecksum).isNotEqualTo(firstChecksum);
+        assertThat(changedResourceChecksum).isNotEqualTo(firstChecksum);
     }
 
     @Test
@@ -408,6 +444,28 @@ class DefinitionManagementServiceTest {
                                                     int executorContractVersion,
                                                     JsonNode executorConfiguration,
                                                     UUID actorUserId) {
+        return command(
+                logicalIdentifier,
+                workType,
+                name,
+                description,
+                executorId,
+                executorContractVersion,
+                executorConfiguration,
+                ResourceRequest.zero(),
+                actorUserId
+        );
+    }
+
+    private static DefinitionContentCommand command(String logicalIdentifier,
+                                                    WorkType workType,
+                                                    String name,
+                                                    String description,
+                                                    String executorId,
+                                                    int executorContractVersion,
+                                                    JsonNode executorConfiguration,
+                                                    ResourceRequest defaultResourceRequest,
+                                                    UUID actorUserId) {
         return new DefinitionContentCommand(
                 logicalIdentifier,
                 workType,
@@ -416,6 +474,7 @@ class DefinitionManagementServiceTest {
                 executorId,
                 executorContractVersion,
                 executorConfiguration,
+                defaultResourceRequest,
                 actorUserId
         );
     }

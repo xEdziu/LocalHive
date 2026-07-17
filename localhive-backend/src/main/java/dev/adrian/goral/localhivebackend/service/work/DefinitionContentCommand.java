@@ -1,5 +1,6 @@
 package dev.adrian.goral.localhivebackend.service.work;
 
+import dev.adrian.goral.localhivebackend.domain.work.ResourceRequest;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
 import com.fasterxml.jackson.databind.JsonNode;
 
@@ -13,6 +14,7 @@ public record DefinitionContentCommand(
         String executorId,
         int executorContractVersion,
         JsonNode executorConfiguration,
+        ResourceRequest defaultResourceRequest,
         UUID actorUserId
 ) {
 }

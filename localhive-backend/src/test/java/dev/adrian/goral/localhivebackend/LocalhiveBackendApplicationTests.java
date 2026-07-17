@@ -45,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("3");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("4");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -55,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2', '3') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(3);
+        assertThat(appliedMigrationCount).isEqualTo(4);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -73,7 +73,8 @@ class LocalhiveBackendApplicationTests {
                 "game_templates",
                 "server_instances",
                 "work_definitions",
-                "work_definition_versions"
+                "work_definition_versions",
+                "work_instances"
         );
 
         List<String> workerColumns = jdbcTemplate.queryForList(
@@ -98,6 +99,31 @@ class LocalhiveBackendApplicationTests {
                         "workers_availability_status_check"
                 )
                 .doesNotContain("workers_status_check");
+
+        List<String> workDefinitionVersionColumns = jdbcTemplate.queryForList(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'work_definition_versions'",
+                String.class
+        );
+        assertThat(workDefinitionVersionColumns)
+                .contains("default_required_ram_mb", "default_required_cpu_cores", "default_gpu_required");
+
+        List<String> workInstanceColumns = jdbcTemplate.queryForList(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'work_instances'",
+                String.class
+        );
+        assertThat(workInstanceColumns)
+                .contains(
+                        "id",
+                        "definition_version_id",
+                        "display_name",
+                        "enabled",
+                        "configuration_overrides",
+                        "override_required_ram_mb",
+                        "override_required_cpu_cores",
+                        "override_gpu_required",
+                        "created_at",
+                        "updated_at"
+                );
     }
 
     @Test
@@ -130,6 +156,122 @@ class LocalhiveBackendApplicationTests {
                 "minecraft",
                 "TASK",
                 "LOCAL"
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void workInstanceConstraintsRequireObjectOverridesAndNonNegativeResourceOverrides() {
+        UUID userId = UUID.randomUUID();
+        UUID definitionId = UUID.randomUUID();
+        UUID versionId = UUID.randomUUID();
+        jdbcTemplate.update("""
+                insert into users (
+                    id,
+                    username,
+                    password_hash,
+                    created_at
+                ) values (?, ?, ?, current_timestamp)
+                """,
+                userId,
+                "schema-user-" + UUID.randomUUID(),
+                "hashed-password"
+        );
+        jdbcTemplate.update("""
+                insert into work_definitions (
+                    id,
+                    logical_identifier,
+                    work_type,
+                    source_type,
+                    created_at
+                ) values (?, ?, ?, ?, current_timestamp)
+                """,
+                definitionId,
+                "localhive.constraint-instance",
+                "TASK",
+                "LOCAL"
+        );
+        jdbcTemplate.update("""
+                insert into work_definition_versions (
+                    id,
+                    definition_id,
+                    version_number,
+                    name,
+                    executor_id,
+                    executor_contract_version,
+                    executor_configuration,
+                    content_checksum,
+                    approval_status,
+                    created_at,
+                    created_by_user_id,
+                    reviewed_at,
+                    reviewed_by_user_id
+                ) values (?, ?, ?, ?, ?, ?, '{}'::jsonb, ?, ?, current_timestamp, ?, current_timestamp, ?)
+                """,
+                versionId,
+                definitionId,
+                1,
+                "Constraint Version",
+                "localhive.constraint-executor",
+                1,
+                "0".repeat(64),
+                "APPROVED",
+                userId,
+                userId
+        );
+
+        jdbcTemplate.update("""
+                insert into work_instances (
+                    id,
+                    definition_version_id,
+                    display_name,
+                    enabled,
+                    configuration_overrides,
+                    override_required_ram_mb,
+                    created_at,
+                    updated_at
+                ) values (?, ?, ?, ?, '{}'::jsonb, ?, current_timestamp, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                versionId,
+                "Constraint Instance",
+                true,
+                0
+        );
+
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into work_instances (
+                    id,
+                    definition_version_id,
+                    display_name,
+                    enabled,
+                    configuration_overrides,
+                    created_at,
+                    updated_at
+                ) values (?, ?, ?, ?, '[]'::jsonb, current_timestamp, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                versionId,
+                "Invalid JSON",
+                true
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into work_instances (
+                    id,
+                    definition_version_id,
+                    display_name,
+                    enabled,
+                    configuration_overrides,
+                    override_required_ram_mb,
+                    created_at,
+                    updated_at
+                ) values (?, ?, ?, ?, '{}'::jsonb, ?, current_timestamp, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                versionId,
+                "Invalid Resources",
+                true,
+                -1
         )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 }

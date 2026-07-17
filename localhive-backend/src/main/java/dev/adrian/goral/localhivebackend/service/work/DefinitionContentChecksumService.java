@@ -1,5 +1,6 @@
 package dev.adrian.goral.localhivebackend.service.work;
 
+import dev.adrian.goral.localhivebackend.domain.work.ResourceRequest;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -16,6 +17,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.StreamSupport;
 
 @Service
@@ -30,7 +32,13 @@ public class DefinitionContentChecksumService {
                                     String description,
                                     String executorId,
                                     int executorContractVersion,
-                                    JsonNode executorConfiguration) {
+                                    JsonNode executorConfiguration,
+                                    ResourceRequest defaultResourceRequest) {
+        ResourceRequest resources = Objects.requireNonNull(
+                defaultResourceRequest,
+                "defaultResourceRequest must not be null."
+        );
+
         ObjectNode canonicalContent = JsonNodeFactory.instance.objectNode();
         canonicalContent.put("logicalIdentifier", logicalIdentifier);
         canonicalContent.put("workType", workType.name());
@@ -44,10 +52,19 @@ public class DefinitionContentChecksumService {
         canonicalContent.put("executorId", executorId);
         canonicalContent.put("executorContractVersion", executorContractVersion);
         canonicalContent.set("executorConfiguration", canonicalize(executorConfiguration));
+        canonicalContent.set("defaultResourceRequest", canonicalResourceRequest(resources));
 
         byte[] serialized = serialize(canonicalize(canonicalContent));
         byte[] digest = sha256(serialized);
         return HexFormat.of().formatHex(digest);
+    }
+
+    private static ObjectNode canonicalResourceRequest(ResourceRequest resourceRequest) {
+        ObjectNode resourceNode = JsonNodeFactory.instance.objectNode();
+        resourceNode.put("requiredRamMb", resourceRequest.getRequiredRamMb());
+        resourceNode.put("requiredCpuCores", resourceRequest.getRequiredCpuCores());
+        resourceNode.put("gpuRequired", resourceRequest.isGpuRequired());
+        return resourceNode;
     }
 
     private JsonNode canonicalize(JsonNode node) {
