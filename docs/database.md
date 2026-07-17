@@ -9,9 +9,10 @@ localhive-backend/src/main/resources/db/migration/V1__baseline.sql
 localhive-backend/src/main/resources/db/migration/V2__split_worker_status.sql
 localhive-backend/src/main/resources/db/migration/V3__add_work_definitions.sql
 localhive-backend/src/main/resources/db/migration/V4__add_work_instances.sql
+localhive-backend/src/main/resources/db/migration/V5__add_work_executions.sql
 ```
 
-The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. V3 adds Work Definition identity and immutable version persistence. V4 adds Work Instance persistence, configuration overrides, and relational resource defaults/overrides. Work execution, assignment, attempts, metrics, and compute-grid runtime tables are intentionally excluded until those domains are designed and implemented.
+The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. V3 adds Work Definition identity and immutable version persistence. V4 adds Work Instance persistence, configuration overrides, and relational resource defaults/overrides. V5 adds Work Execution lifecycle persistence with resolved configuration and resource snapshots. Assignment, attempts, metrics, result storage, artifacts, leases, and compute-grid runtime tables are intentionally excluded until those domains are designed and implemented.
 
 ## Integration Tests
 
@@ -32,6 +33,7 @@ No manually running LocalHive PostgreSQL instance is required for tests. Testcon
 | `work_definitions` | Stable logical identities for local or imported work definitions. |
 | `work_definition_versions` | Immutable content versions for work definitions, including approval state. |
 | `work_instances` | User-configured instances pinned to one immutable work definition version. |
+| `work_executions` | Execution lifecycle records created from an approved definition version or enabled work instance. |
 
 ## Entity Relationship Diagram
 
@@ -109,6 +111,27 @@ erDiagram
         timestamp updated_at
     }
 
+    WORK_EXECUTIONS {
+        UUID id PK
+        timestamp assigned_at
+        timestamp cancelled_at
+        timestamp claimed_at
+        timestamp completed_at
+        timestamp created_at
+        UUID definition_version_id FK
+        timestamp expired_at
+        string failure_code
+        string failure_message
+        UUID instance_id FK
+        timestamp queued_at
+        jsonb resolved_configuration_snapshot
+        boolean resolved_gpu_required
+        int resolved_required_cpu_cores
+        int resolved_required_ram_mb
+        timestamp started_at
+        string status
+    }
+
     GAME_TEMPLATES {
         UUID id PK
         int default_port
@@ -146,6 +169,8 @@ erDiagram
     GAME_TEMPLATES ||--o{ SERVER_INSTANCES : templates
     WORK_DEFINITIONS ||--o{ WORK_DEFINITION_VERSIONS : versions
     WORK_DEFINITION_VERSIONS ||--o{ WORK_INSTANCES : instances
+    WORK_DEFINITION_VERSIONS ||--o{ WORK_EXECUTIONS : executions
+    WORK_INSTANCES ||--o{ WORK_EXECUTIONS : creates
     USERS ||--o{ WORK_DEFINITION_VERSIONS : created
     USERS ||--o{ WORK_DEFINITION_VERSIONS : reviewed
 ```
@@ -163,6 +188,7 @@ erDiagram
 | `work_definitions` | Primary key on `id`; unique `logical_identifier`; check for lowercase logical identifier format; enum checks for `work_type` and `source_type`. |
 | `work_definition_versions` | Primary key on `id`; unique `(definition_id, version_number)`; foreign keys to `work_definitions(id)` and creator/reviewer `users(id)`; checks for version number, executor contract version, JSON object executor configuration, non-negative default RAM/CPU resources, lowercase SHA-256 checksum, approval status, and approval review metadata. |
 | `work_instances` | Primary key on `id`; foreign key to `work_definition_versions(id)`; checks for non-blank display name, JSON object configuration overrides, and non-negative nullable RAM/CPU resource overrides. |
+| `work_executions` | Primary key on `id`; foreign keys to `work_definition_versions(id)` and optional `work_instances(id)`; checks for lifecycle status values, JSON object resolved configuration snapshot, non-negative resolved RAM/CPU resources, lifecycle timestamp consistency, and failure fields for failed executions. |
 
 ## Worker State
 
@@ -185,7 +211,7 @@ Work Definition identity is split from versioned content:
 | `work_definitions` | Logical identifier, work type, source type, optional original imported definition id, and creation timestamp. |
 | `work_definition_versions` | Version number, display name, description, executor id, executor contract version, executor configuration JSON, default resource request, and content checksum. |
 
-Version numbers are assigned by Master per definition with a unique `(definition_id, version_number)` constraint. No `latestVersionNumber`, current-version pointer, Work Execution, Assignment, Attempt, or runtime Task table exists in this migration.
+Version numbers are assigned by Master per definition with a unique `(definition_id, version_number)` constraint. No `latestVersionNumber`, current-version pointer, Assignment, Attempt, or runtime Task table exists in this migration.
 
 `executor_configuration` is stored as PostgreSQL `JSONB` and must have a JSON object root. Empty objects are valid; arrays, scalars, and JSON null are rejected by application validation and the database check constraint.
 
@@ -200,3 +226,11 @@ Work Instances are user-configured instances pinned to a specific `work_definiti
 `configuration_overrides` is stored as PostgreSQL `JSONB` and must have a JSON object root. Effective configuration is resolved at runtime by recursively merging the pinned version's `executor_configuration` with the instance overrides. Objects merge recursively, arrays and scalar values replace the base value, and explicit JSON null is preserved as a value.
 
 Resource overrides are stored relationally as nullable columns. A null override inherits the pinned version default, while a non-null RAM or CPU override must be greater than or equal to `0`. The `enabled` flag is only an administrative enable/disable setting; it is not a desired runtime state, assignment state, execution state, or scheduler lease.
+
+## Work Executions
+
+Work Executions are lifecycle records for actual execution requests. A record is created from either an approved `work_definition_versions.id` directly or from an enabled `work_instances.id`. Instance-created executions still store the pinned `definition_version_id` explicitly.
+
+The `resolved_configuration_snapshot` column stores the effective JSONB object after applying one-off or instance configuration overrides. The resolved resource request is stored relationally as RAM MiB, CPU cores, and GPU-required columns. These snapshots are not updated when a Work Definition Version or Work Instance changes later.
+
+Current lifecycle statuses are `QUEUED`, `ASSIGNED`, `CLAIMED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, and `EXPIRED`. V5 stores timestamps for those lifecycle transitions and minimal failure fields (`failure_code`, `failure_message`) for failed executions. It does not create worker assignment, attempt, lease, retry, progress, result, artifact, scheduler, polling, or executor registry tables.

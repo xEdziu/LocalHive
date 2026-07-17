@@ -45,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("4");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("5");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -55,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(4);
+        assertThat(appliedMigrationCount).isEqualTo(5);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -74,7 +74,8 @@ class LocalhiveBackendApplicationTests {
                 "server_instances",
                 "work_definitions",
                 "work_definition_versions",
-                "work_instances"
+                "work_instances",
+                "work_executions"
         );
 
         List<String> workerColumns = jdbcTemplate.queryForList(
@@ -123,6 +124,49 @@ class LocalhiveBackendApplicationTests {
                         "override_gpu_required",
                         "created_at",
                         "updated_at"
+                );
+
+        List<String> workExecutionColumns = jdbcTemplate.queryForList(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'work_executions'",
+                String.class
+        );
+        assertThat(workExecutionColumns)
+                .contains(
+                        "id",
+                        "definition_version_id",
+                        "instance_id",
+                        "status",
+                        "created_at",
+                        "queued_at",
+                        "assigned_at",
+                        "claimed_at",
+                        "started_at",
+                        "completed_at",
+                        "cancelled_at",
+                        "expired_at",
+                        "resolved_configuration_snapshot",
+                        "resolved_required_ram_mb",
+                        "resolved_required_cpu_cores",
+                        "resolved_gpu_required",
+                        "failure_code",
+                        "failure_message"
+                );
+
+        List<String> workExecutionCheckConstraints = jdbcTemplate.queryForList("""
+                select constraint_name
+                from information_schema.table_constraints
+                where table_schema = 'public'
+                  and table_name = 'work_executions'
+                  and constraint_type = 'CHECK'
+                """, String.class);
+        assertThat(workExecutionCheckConstraints)
+                .contains(
+                        "work_executions_status_check",
+                        "work_executions_resolved_configuration_snapshot_check",
+                        "work_executions_resolved_required_ram_mb_check",
+                        "work_executions_resolved_required_cpu_cores_check",
+                        "work_executions_lifecycle_timestamp_check",
+                        "work_executions_failure_fields_check"
                 );
     }
 
