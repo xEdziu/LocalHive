@@ -45,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("6");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("7");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -55,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(6);
+        assertThat(appliedMigrationCount).isEqualTo(7);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -181,7 +181,10 @@ class LocalhiveBackendApplicationTests {
                         "execution_id",
                         "worker_id",
                         "assignment_mode",
-                        "assigned_at"
+                        "assigned_at",
+                        "claimed_at",
+                        "lease_expires_at",
+                        "lease_token_hash"
                 );
 
         List<String> executionAttemptColumns = jdbcTemplate.queryForList(
@@ -209,7 +212,10 @@ class LocalhiveBackendApplicationTests {
                   and constraint_type = 'CHECK'
                 """, String.class);
         assertThat(executionAssignmentCheckConstraints)
-                .contains("execution_assignments_assignment_mode_check");
+                .contains(
+                        "execution_assignments_assignment_mode_check",
+                        "execution_assignments_lease_fields_check"
+                );
 
         List<String> executionAttemptCheckConstraints = jdbcTemplate.queryForList("""
                 select constraint_name

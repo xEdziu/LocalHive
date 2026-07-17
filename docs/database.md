@@ -11,9 +11,11 @@ localhive-backend/src/main/resources/db/migration/V3__add_work_definitions.sql
 localhive-backend/src/main/resources/db/migration/V4__add_work_instances.sql
 localhive-backend/src/main/resources/db/migration/V5__add_work_executions.sql
 localhive-backend/src/main/resources/db/migration/V6__add_execution_attempts_and_assignments.sql
+localhive-backend/src/main/resources/db/migration/V7__add_execution_assignment_lease.sql
 ```
 
-The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. V3 adds Work Definition identity and immutable version persistence. V4 adds Work Instance persistence, configuration overrides, and relational resource defaults/overrides. V5 adds Work Execution lifecycle persistence with resolved configuration and resource snapshots. V6 adds one Master-side execution assignment per execution and one concrete execution attempt once an assigned execution starts running. Metrics, result storage, artifacts, leases, scheduler queues, polling, and compute-grid runtime tables are intentionally excluded until those domains are designed and implemented.
+The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. V3 adds Work Definition identity and immutable version persistence. V4 adds Work Instance persistence, configuration overrides, and relational resource defaults/overrides. V5 adds Work Execution lifecycle persistence with resolved configuration and resource snapshots. V6 adds one Master-side execution assignment per execution and one concrete execution attempt once an assigned execution starts running. Metrics, result storage, artifacts, scheduler queues, and compute-grid runtime tables are intentionally excluded until those domains are designed and implemented.
+V7 adds worker claim lease fields directly to `execution_assignments`. The raw lease token is never stored; only `lease_token_hash` is persisted. V7 does not add a scheduler, polling table, or separate lease table.
 
 ## Integration Tests
 
@@ -35,7 +37,7 @@ No manually running LocalHive PostgreSQL instance is required for tests. Testcon
 | `work_definition_versions` | Immutable content versions for work definitions, including approval state. |
 | `work_instances` | User-configured instances pinned to one immutable work definition version. |
 | `work_executions` | Execution lifecycle records created from an approved definition version or enabled work instance. |
-| `execution_assignments` | Master-side decision assigning one work execution to one eligible worker. |
+| `execution_assignments` | Master-side decision assigning one work execution to one eligible worker, including worker claim lease metadata. |
 | `execution_attempts` | Concrete runtime attempt for an assigned execution; currently limited to attempt number `1`. |
 
 ## Entity Relationship Diagram
@@ -139,7 +141,10 @@ erDiagram
         UUID id PK
         timestamp assigned_at
         string assignment_mode
+        timestamp claimed_at
         UUID execution_id FK
+        timestamp lease_expires_at
+        string lease_token_hash
         UUID worker_id FK
     }
 
@@ -216,7 +221,7 @@ erDiagram
 | `work_definition_versions` | Primary key on `id`; unique `(definition_id, version_number)`; foreign keys to `work_definitions(id)` and creator/reviewer `users(id)`; checks for version number, executor contract version, JSON object executor configuration, non-negative default RAM/CPU resources, lowercase SHA-256 checksum, approval status, and approval review metadata. |
 | `work_instances` | Primary key on `id`; foreign key to `work_definition_versions(id)`; checks for non-blank display name, JSON object configuration overrides, and non-negative nullable RAM/CPU resource overrides. |
 | `work_executions` | Primary key on `id`; foreign keys to `work_definition_versions(id)` and optional `work_instances(id)`; checks for lifecycle status values, JSON object resolved configuration snapshot, non-negative resolved RAM/CPU resources, lifecycle timestamp consistency, and failure fields for failed executions. |
-| `execution_assignments` | Primary key on `id`; unique `execution_id`; foreign keys to `work_executions(id)` and `workers(id)`; check for assignment modes `AUTO`, `PREFER`, and `REQUIRE`; index on `worker_id`. |
+| `execution_assignments` | Primary key on `id`; unique `execution_id`; foreign keys to `work_executions(id)` and `workers(id)`; check for assignment modes `AUTO`, `PREFER`, and `REQUIRE`; check that claim lease fields are either all null or all present; index on `worker_id`. |
 | `execution_attempts` | Primary key on `id`; unique `execution_id`; unique `(execution_id, attempt_number)`; foreign keys to `work_executions(id)` and `execution_assignments(id)`; check that `attempt_number = 1`; checks for attempt statuses and terminal timestamp/failure-field consistency. |
 
 ## Worker State
@@ -268,8 +273,10 @@ Current lifecycle statuses are `QUEUED`, `ASSIGNED`, `CLAIMED`, `RUNNING`, `SUCC
 
 Execution Assignment records the Master decision that one `work_executions.id` is assigned to one `workers.id`. The database enforces one assignment per execution with `uk_execution_assignments_execution_id`. Assignment modes are `AUTO`, `PREFER`, and `REQUIRE`. The current service layer creates an assignment only for a `QUEUED` execution and an eligible worker whose state is `APPROVED`, `ONLINE`, and `AVAILABLE`; the database stores the decision and foreign keys, while worker eligibility remains application logic.
 
+V7 adds claim lease metadata to `execution_assignments`: `claimed_at`, `lease_expires_at`, and `lease_token_hash`. The claim lease fields are nullable for unclaimed assignments and must be all present after claim. Master returns the raw lease token to the worker once during claim and stores only the hash. M3 validates leases on worker report/renew requests and exposes a manual stale-claim expiry service method; it does not add a background scheduler or a separate lease table.
+
 Execution Attempt records the concrete runtime attempt for an assigned execution. The current implementation creates an attempt only when lifecycle moves from `CLAIMED` to `RUNNING`. The schema intentionally enforces `attempt_number = 1`, unique `execution_id`, and unique `(execution_id, attempt_number)` because retry policy and multi-attempt execution are not implemented yet.
 
 Current attempt statuses are `RUNNING`, `SUCCEEDED`, `FAILED`, and `CANCELLED`. Running attempts have no completion or failure fields. Succeeded and cancelled attempts require `completed_at` and have no failure fields. Failed attempts require `completed_at` and a non-blank `failure_code`; `failure_message` is optional but must be non-blank when present.
 
-V6 does not introduce leases, claim tokens, scheduler ownership, REST polling, Agent transport changes, progress, logs, results, artifacts, executor registry, or retry policy.
+V6 does not introduce leases, claim tokens, scheduler ownership, REST polling, Agent transport changes, progress, logs, results, artifacts, executor registry, or retry policy. V7 introduces assignment lease fields only; Agent executor implementation, scheduler ownership, progress, logs, results, artifacts, executor registry, and retry policy remain out of scope.

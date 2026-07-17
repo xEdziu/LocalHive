@@ -44,7 +44,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
     private final ApiErrorResponseWriter errorResponseWriter;
 
     private static final Pattern WORKER_API_PATH_PATTERN = Pattern.compile(
-            "^/api/workers/([^/]+)/(heartbeat|allocation|spec)$"
+            "^/api/workers/([^/]+)/(heartbeat|allocation|spec|assigned-executions/claim-next|executions/[^/]+/(running|succeeded|failed|lease/renew))$"
     );
 
     @Override

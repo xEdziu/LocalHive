@@ -61,6 +61,16 @@ public class ExecutionAssignment {
     @Column(name = "assigned_at", nullable = false, updatable = false)
     private LocalDateTime assignedAt;
 
+    @Column(name = "claimed_at")
+    private LocalDateTime claimedAt;
+
+    @Column(name = "lease_expires_at")
+    private LocalDateTime leaseExpiresAt;
+
+    @ToString.Exclude
+    @Column(name = "lease_token_hash")
+    private String leaseTokenHash;
+
     private ExecutionAssignment(WorkExecution execution,
                                 Worker worker,
                                 ExecutionAssignmentMode assignmentMode,
@@ -79,6 +89,36 @@ public class ExecutionAssignment {
         return new ExecutionAssignment(execution, worker, assignmentMode, assignedAt);
     }
 
+    public void claim(String leaseTokenHash, LocalDateTime claimedAt, LocalDateTime leaseExpiresAt) {
+        requireUnclaimed();
+        String validLeaseTokenHash = requireNonBlank(leaseTokenHash, "leaseTokenHash");
+        LocalDateTime validClaimedAt = Objects.requireNonNull(claimedAt, "claimedAt must not be null.");
+        LocalDateTime validLeaseExpiresAt = Objects.requireNonNull(
+                leaseExpiresAt,
+                "leaseExpiresAt must not be null."
+        );
+        if (!validLeaseExpiresAt.isAfter(validClaimedAt)) {
+            throw new IllegalArgumentException("leaseExpiresAt must be after claimedAt.");
+        }
+
+        this.leaseTokenHash = validLeaseTokenHash;
+        this.claimedAt = validClaimedAt;
+        this.leaseExpiresAt = validLeaseExpiresAt;
+    }
+
+    public void renewLease(LocalDateTime newLeaseExpiresAt) {
+        requireClaimed();
+        LocalDateTime validLeaseExpiresAt = Objects.requireNonNull(
+                newLeaseExpiresAt,
+                "leaseExpiresAt must not be null."
+        );
+        if (!validLeaseExpiresAt.isAfter(leaseExpiresAt)) {
+            throw new IllegalArgumentException("leaseExpiresAt must extend the current lease.");
+        }
+
+        this.leaseExpiresAt = validLeaseExpiresAt;
+    }
+
     private static void requireAssignedExecution(WorkExecution execution) {
         if (execution.getStatus() != WorkExecutionStatus.ASSIGNED) {
             throw new IllegalStateException(
@@ -86,6 +126,26 @@ public class ExecutionAssignment {
                             + execution.getStatus()
             );
         }
+    }
+
+    private void requireUnclaimed() {
+        if (claimedAt != null || leaseExpiresAt != null || leaseTokenHash != null) {
+            throw new IllegalStateException("Execution assignment is already claimed.");
+        }
+    }
+
+    private void requireClaimed() {
+        if (claimedAt == null || leaseExpiresAt == null || leaseTokenHash == null) {
+            throw new IllegalStateException("Execution assignment has no active lease.");
+        }
+    }
+
+    private static String requireNonBlank(String value, String fieldName) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " must not be blank.");
+        }
+
+        return value;
     }
 
     @Override

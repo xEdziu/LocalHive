@@ -37,6 +37,9 @@ class ExecutionAssignmentTest {
         assertThat(assignment.getWorker()).isSameAs(worker);
         assertThat(assignment.getAssignmentMode()).isEqualTo(ExecutionAssignmentMode.AUTO);
         assertThat(assignment.getAssignedAt()).isEqualTo(BASE_TIME.plusMinutes(1));
+        assertThat(assignment.getClaimedAt()).isNull();
+        assertThat(assignment.getLeaseExpiresAt()).isNull();
+        assertThat(assignment.getLeaseTokenHash()).isNull();
     }
 
     @Test
@@ -85,6 +88,82 @@ class ExecutionAssignmentTest {
         )).isInstanceOf(NullPointerException.class);
     }
 
+    @Test
+    void shouldClaimAssignmentWithLeaseFields() {
+        ExecutionAssignment assignment = assignedExecution();
+
+        assignment.claim(
+                "hashed-token",
+                BASE_TIME.plusMinutes(2),
+                BASE_TIME.plusMinutes(3)
+        );
+
+        assertThat(assignment.getClaimedAt()).isEqualTo(BASE_TIME.plusMinutes(2));
+        assertThat(assignment.getLeaseExpiresAt()).isEqualTo(BASE_TIME.plusMinutes(3));
+        assertThat(assignment.getLeaseTokenHash()).isEqualTo("hashed-token");
+    }
+
+    @Test
+    void shouldRejectInvalidClaimFieldsAndDuplicateClaim() {
+        ExecutionAssignment assignment = assignedExecution();
+
+        assertThatThrownBy(() -> assignment.claim(
+                " ",
+                BASE_TIME.plusMinutes(2),
+                BASE_TIME.plusMinutes(3)
+        )).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> assignment.claim(
+                "hashed-token",
+                null,
+                BASE_TIME.plusMinutes(3)
+        )).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> assignment.claim(
+                "hashed-token",
+                BASE_TIME.plusMinutes(2),
+                null
+        )).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> assignment.claim(
+                "hashed-token",
+                BASE_TIME.plusMinutes(2),
+                BASE_TIME.plusMinutes(2)
+        )).isInstanceOf(IllegalArgumentException.class);
+
+        assignment.claim("hashed-token", BASE_TIME.plusMinutes(2), BASE_TIME.plusMinutes(3));
+
+        assertThatThrownBy(() -> assignment.claim(
+                "other-hashed-token",
+                BASE_TIME.plusMinutes(4),
+                BASE_TIME.plusMinutes(5)
+        )).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void shouldRenewClaimedAssignmentWithoutChangingClaimTimestampOrHash() {
+        ExecutionAssignment assignment = assignedExecution();
+        assignment.claim("hashed-token", BASE_TIME.plusMinutes(2), BASE_TIME.plusMinutes(3));
+
+        assignment.renewLease(BASE_TIME.plusMinutes(4));
+
+        assertThat(assignment.getClaimedAt()).isEqualTo(BASE_TIME.plusMinutes(2));
+        assertThat(assignment.getLeaseExpiresAt()).isEqualTo(BASE_TIME.plusMinutes(4));
+        assertThat(assignment.getLeaseTokenHash()).isEqualTo("hashed-token");
+    }
+
+    @Test
+    void shouldRejectInvalidLeaseRenewal() {
+        ExecutionAssignment assignment = assignedExecution();
+
+        assertThatThrownBy(() -> assignment.renewLease(BASE_TIME.plusMinutes(4)))
+                .isInstanceOf(IllegalStateException.class);
+
+        assignment.claim("hashed-token", BASE_TIME.plusMinutes(2), BASE_TIME.plusMinutes(3));
+
+        assertThatThrownBy(() -> assignment.renewLease(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> assignment.renewLease(BASE_TIME.plusMinutes(3)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     private static WorkExecution queuedExecution() {
         return WorkExecution.createQueued(
                 version("localhive.assignment"),
@@ -92,6 +171,17 @@ class ExecutionAssignmentTest {
                 JsonNodeFactory.instance.objectNode(),
                 ResourceRequest.zero(),
                 BASE_TIME
+        );
+    }
+
+    private static ExecutionAssignment assignedExecution() {
+        WorkExecution execution = queuedExecution();
+        execution.markAssigned(BASE_TIME.plusMinutes(1));
+        return ExecutionAssignment.create(
+                execution,
+                eligibleWorker(),
+                ExecutionAssignmentMode.AUTO,
+                BASE_TIME.plusMinutes(1)
         );
     }
 
