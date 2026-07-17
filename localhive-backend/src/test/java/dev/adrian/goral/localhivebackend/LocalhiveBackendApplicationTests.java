@@ -45,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("5");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("6");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -55,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(5);
+        assertThat(appliedMigrationCount).isEqualTo(6);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -75,7 +75,9 @@ class LocalhiveBackendApplicationTests {
                 "work_definitions",
                 "work_definition_versions",
                 "work_instances",
-                "work_executions"
+                "work_executions",
+                "execution_assignments",
+                "execution_attempts"
         );
 
         List<String> workerColumns = jdbcTemplate.queryForList(
@@ -167,6 +169,60 @@ class LocalhiveBackendApplicationTests {
                         "work_executions_resolved_required_cpu_cores_check",
                         "work_executions_lifecycle_timestamp_check",
                         "work_executions_failure_fields_check"
+                );
+
+        List<String> executionAssignmentColumns = jdbcTemplate.queryForList(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'execution_assignments'",
+                String.class
+        );
+        assertThat(executionAssignmentColumns)
+                .contains(
+                        "id",
+                        "execution_id",
+                        "worker_id",
+                        "assignment_mode",
+                        "assigned_at"
+                );
+
+        List<String> executionAttemptColumns = jdbcTemplate.queryForList(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'execution_attempts'",
+                String.class
+        );
+        assertThat(executionAttemptColumns)
+                .contains(
+                        "id",
+                        "execution_id",
+                        "assignment_id",
+                        "attempt_number",
+                        "status",
+                        "started_at",
+                        "completed_at",
+                        "failure_code",
+                        "failure_message"
+                );
+
+        List<String> executionAssignmentCheckConstraints = jdbcTemplate.queryForList("""
+                select constraint_name
+                from information_schema.table_constraints
+                where table_schema = 'public'
+                  and table_name = 'execution_assignments'
+                  and constraint_type = 'CHECK'
+                """, String.class);
+        assertThat(executionAssignmentCheckConstraints)
+                .contains("execution_assignments_assignment_mode_check");
+
+        List<String> executionAttemptCheckConstraints = jdbcTemplate.queryForList("""
+                select constraint_name
+                from information_schema.table_constraints
+                where table_schema = 'public'
+                  and table_name = 'execution_attempts'
+                  and constraint_type = 'CHECK'
+                """, String.class);
+        assertThat(executionAttemptCheckConstraints)
+                .contains(
+                        "execution_attempts_attempt_number_check",
+                        "execution_attempts_status_check",
+                        "execution_attempts_lifecycle_check"
                 );
     }
 
