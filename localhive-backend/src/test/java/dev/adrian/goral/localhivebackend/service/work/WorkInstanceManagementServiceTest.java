@@ -20,6 +20,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -113,7 +115,12 @@ class WorkInstanceManagementServiceTest {
 
         WorkInstance renamed = instanceManagementService.renameInstance(instance.getId(), "After");
         assertThat(renamed.getDisplayName()).isEqualTo("After");
-        assertThat(renamed.getUpdatedAt()).isAfterOrEqualTo(renamed.getCreatedAt());
+        assertThat(instanceRepository.findById(instance.getId()))
+                .hasValueSatisfying(stored -> {
+                    assertThat(stored.getDisplayName()).isEqualTo("After");
+                    assertThat(toDatabaseTimestampPrecision(stored.getUpdatedAt()))
+                            .isAfterOrEqualTo(toDatabaseTimestampPrecision(stored.getCreatedAt()));
+                });
 
         WorkInstance disabled = instanceManagementService.disableInstance(instance.getId());
         assertThat(disabled.isEnabled()).isFalse();
@@ -199,6 +206,10 @@ class WorkInstanceManagementServiceTest {
                 .username(username + "-" + UUID.randomUUID())
                 .passwordHash("hashed-password")
                 .build());
+    }
+
+    private static LocalDateTime toDatabaseTimestampPrecision(LocalDateTime timestamp) {
+        return timestamp.truncatedTo(ChronoUnit.MICROS);
     }
 
     private static DefinitionContentCommand command(String logicalIdentifier,
