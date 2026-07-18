@@ -74,6 +74,8 @@ public class SecurityConfig {
                         // Allow system infrastructure endpoints
                         .requestMatchers("/api/health", "/error").permitAll()
 
+                        .requestMatchers("/api/dev/smoke/**").hasRole("ADMIN")
+
                         .requestMatchers("/api/workers/**").authenticated()
 
                         // Core dashboard administration explicitly locked under ADMIN role
