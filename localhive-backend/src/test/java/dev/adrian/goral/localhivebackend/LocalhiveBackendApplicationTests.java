@@ -45,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("7");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("8");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -55,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(7);
+        assertThat(appliedMigrationCount).isEqualTo(8);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -77,7 +77,8 @@ class LocalhiveBackendApplicationTests {
                 "work_instances",
                 "work_executions",
                 "execution_assignments",
-                "execution_attempts"
+                "execution_attempts",
+                "artifacts"
         );
 
         List<String> workerColumns = jdbcTemplate.queryForList(
@@ -230,6 +231,54 @@ class LocalhiveBackendApplicationTests {
                         "execution_attempts_status_check",
                         "execution_attempts_lifecycle_check"
                 );
+
+        List<String> artifactColumns = jdbcTemplate.queryForList(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'artifacts'",
+                String.class
+        );
+        assertThat(artifactColumns)
+                .contains(
+                        "id",
+                        "kind",
+                        "original_filename",
+                        "content_type",
+                        "size_bytes",
+                        "sha256",
+                        "storage_path",
+                        "created_at",
+                        "created_by"
+                );
+
+        List<String> artifactCheckConstraints = jdbcTemplate.queryForList("""
+                select constraint_name
+                from information_schema.table_constraints
+                where table_schema = 'public'
+                  and table_name = 'artifacts'
+                  and constraint_type = 'CHECK'
+                """, String.class);
+        assertThat(artifactCheckConstraints)
+                .contains(
+                        "artifacts_kind_check",
+                        "artifacts_kind_not_blank_check",
+                        "artifacts_original_filename_not_blank_check",
+                        "artifacts_content_type_not_blank_check",
+                        "artifacts_size_bytes_check",
+                        "artifacts_sha256_length_check",
+                        "artifacts_storage_path_not_blank_check"
+                );
+
+        List<String> artifactIndexes = jdbcTemplate.queryForList("""
+                select indexname
+                from pg_indexes
+                where schemaname = 'public'
+                  and tablename = 'artifacts'
+                """, String.class);
+        assertThat(artifactIndexes)
+                .contains(
+                        "idx_artifacts_kind",
+                        "idx_artifacts_created_at",
+                        "idx_artifacts_sha256"
+                );
     }
 
     @Test
@@ -262,6 +311,89 @@ class LocalhiveBackendApplicationTests {
                 "minecraft",
                 "TASK",
                 "LOCAL"
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void artifactConstraintsRequireValidMetadata() {
+        jdbcTemplate.update("""
+                insert into artifacts (
+                    id,
+                    kind,
+                    original_filename,
+                    content_type,
+                    size_bytes,
+                    sha256,
+                    storage_path,
+                    created_at,
+                    created_by
+                ) values (?, ?, ?, ?, ?, ?, ?, current_timestamp, ?)
+                """,
+                UUID.randomUUID(),
+                "WORKSPACE_PACKAGE",
+                "workspace.zip",
+                "application/zip",
+                12L,
+                "0".repeat(64),
+                UUID.randomUUID() + "/package.zip",
+                "schema-test"
+        );
+
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into artifacts (
+                    id,
+                    kind,
+                    original_filename,
+                    size_bytes,
+                    sha256,
+                    storage_path,
+                    created_at
+                ) values (?, ?, ?, ?, ?, ?, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                "OUTPUT",
+                "workspace.zip",
+                12L,
+                "0".repeat(64),
+                UUID.randomUUID() + "/package.zip"
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into artifacts (
+                    id,
+                    kind,
+                    original_filename,
+                    size_bytes,
+                    sha256,
+                    storage_path,
+                    created_at
+                ) values (?, ?, ?, ?, ?, ?, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                "WORKSPACE_PACKAGE",
+                "workspace.zip",
+                -1L,
+                "0".repeat(64),
+                UUID.randomUUID() + "/package.zip"
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into artifacts (
+                    id,
+                    kind,
+                    original_filename,
+                    size_bytes,
+                    sha256,
+                    storage_path,
+                    created_at
+                ) values (?, ?, ?, ?, ?, ?, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                "WORKSPACE_PACKAGE",
+                "workspace.zip",
+                12L,
+                "0".repeat(63),
+                UUID.randomUUID() + "/package.zip"
         )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 

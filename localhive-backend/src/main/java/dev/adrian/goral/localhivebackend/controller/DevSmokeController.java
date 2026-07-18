@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.adrian.goral.localhivebackend.domain.User;
+import dev.adrian.goral.localhivebackend.domain.artifact.ArtifactKind;
 import dev.adrian.goral.localhivebackend.domain.work.ExecutionAssignment;
 import dev.adrian.goral.localhivebackend.domain.work.ResourceRequest;
 import dev.adrian.goral.localhivebackend.domain.work.ResourceRequestOverrides;
@@ -14,6 +15,7 @@ import dev.adrian.goral.localhivebackend.domain.work.enums.DefinitionApprovalSta
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionAssignmentMode;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
 import dev.adrian.goral.localhivebackend.repository.UserRepository;
+import dev.adrian.goral.localhivebackend.repository.artifact.ArtifactRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkDefinitionRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkDefinitionVersionRepository;
 import dev.adrian.goral.localhivebackend.service.work.CreateOneOffExecutionCommand;
@@ -71,6 +73,7 @@ public class DevSmokeController {
     private final WorkDefinitionRepository definitionRepository;
     private final WorkDefinitionVersionRepository versionRepository;
     private final UserRepository userRepository;
+    private final ArtifactRepository artifactRepository;
 
     @PostMapping("/workers/{workerId}/no-op")
     public ResponseEntity<NoOpSmokeResponseDto> seedNoOpExecution(@PathVariable UUID workerId,
@@ -251,10 +254,17 @@ public class DevSmokeController {
         ObjectNode gpu = configuration.putObject("gpu");
         gpu.put("required", false);
 
+        if (request.workspace() != null) {
+            ObjectNode workspace = configuration.putObject("workspace");
+            workspace.put("artifactId", request.workspace().artifactId().toString());
+            workspace.put("mountPath", request.workspace().mountPath());
+            workspace.put("readOnly", request.workspace().readOnly());
+        }
+
         return configuration;
     }
 
-    private static DockerWorkloadSmokeRequestDto validateDockerWorkloadRequest(
+    private DockerWorkloadSmokeRequestDto validateDockerWorkloadRequest(
             DockerWorkloadSmokeRequestDto request
     ) {
         DockerWorkloadSmokeRequestDto candidate = request == null ? defaultDockerWorkloadRequest() : request;
@@ -275,13 +285,15 @@ public class DevSmokeController {
         if (gpu.required()) {
             throw badRequest("gpu.required must be false. GPU workloads are deferred.");
         }
+        DockerWorkloadWorkspaceDto workspace = validateWorkspace(candidate.workspace());
 
         return new DockerWorkloadSmokeRequestDto(
                 image,
                 command,
                 timeoutSeconds,
                 new DockerWorkloadResourcesDto(memoryMb, cpuCores),
-                new DockerWorkloadGpuDto(false)
+                new DockerWorkloadGpuDto(false),
+                workspace
         );
     }
 
@@ -291,8 +303,31 @@ public class DevSmokeController {
                 DEFAULT_DOCKER_COMMAND,
                 DEFAULT_DOCKER_TIMEOUT_SECONDS,
                 new DockerWorkloadResourcesDto(DEFAULT_DOCKER_MEMORY_MB, DEFAULT_DOCKER_CPU_CORES),
-                new DockerWorkloadGpuDto(false)
+                new DockerWorkloadGpuDto(false),
+                null
         );
+    }
+
+    private DockerWorkloadWorkspaceDto validateWorkspace(DockerWorkloadWorkspaceDto workspace) {
+        if (workspace == null) {
+            return null;
+        }
+        if (workspace.artifactId() == null) {
+            throw badRequest("workspace.artifactId is required.");
+        }
+        artifactRepository.findById(workspace.artifactId())
+                .filter(artifact -> artifact.getKind() == ArtifactKind.WORKSPACE_PACKAGE)
+                .orElseThrow(() -> badRequest(
+                        "workspace.artifactId must reference an existing WORKSPACE_PACKAGE artifact."
+                ));
+        if (!"/workspace".equals(workspace.mountPath())) {
+            throw badRequest("workspace.mountPath must be /workspace.");
+        }
+        if (!Boolean.TRUE.equals(workspace.readOnly())) {
+            throw badRequest("workspace.readOnly must be true.");
+        }
+
+        return new DockerWorkloadWorkspaceDto(workspace.artifactId(), "/workspace", true);
     }
 
     private static String requireAllowedImage(String image) {
@@ -349,7 +384,8 @@ public class DevSmokeController {
             List<String> command,
             Integer timeoutSeconds,
             DockerWorkloadResourcesDto resources,
-            DockerWorkloadGpuDto gpu
+            DockerWorkloadGpuDto gpu,
+            DockerWorkloadWorkspaceDto workspace
     ) {
     }
 
@@ -361,6 +397,13 @@ public class DevSmokeController {
 
     public record DockerWorkloadGpuDto(
             Boolean required
+    ) {
+    }
+
+    public record DockerWorkloadWorkspaceDto(
+            UUID artifactId,
+            String mountPath,
+            Boolean readOnly
     ) {
     }
 

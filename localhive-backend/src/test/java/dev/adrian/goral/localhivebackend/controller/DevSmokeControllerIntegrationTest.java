@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.jayway.jsonpath.JsonPath;
 import dev.adrian.goral.localhivebackend.domain.User;
 import dev.adrian.goral.localhivebackend.domain.Worker;
+import dev.adrian.goral.localhivebackend.domain.artifact.Artifact;
+import dev.adrian.goral.localhivebackend.domain.artifact.ArtifactKind;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
@@ -11,6 +13,7 @@ import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionAssignmentMo
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
 import dev.adrian.goral.localhivebackend.repository.UserRepository;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
+import dev.adrian.goral.localhivebackend.repository.artifact.ArtifactRepository;
 import dev.adrian.goral.localhivebackend.repository.work.ExecutionAssignmentRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkDefinitionRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkDefinitionVersionRepository;
@@ -28,6 +31,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,6 +73,9 @@ class DevSmokeControllerIntegrationTest {
 
     @Autowired
     private ExecutionAssignmentRepository assignmentRepository;
+
+    @Autowired
+    private ArtifactRepository artifactRepository;
 
     @Test
     void shouldCreateNoOpExecutionAndAssignItToWorker() throws Exception {
@@ -203,6 +210,141 @@ class DevSmokeControllerIntegrationTest {
                             .hasValueSatisfying(assignment ->
                                     assertThat(assignment.getAssignmentMode()).isEqualTo(ExecutionAssignmentMode.REQUIRE));
                 });
+    }
+
+    @Test
+    void shouldCreateDockerWorkloadExecutionWithWorkspaceArtifact() throws Exception {
+        createUser("dev-smoke-workspace-admin");
+        Worker worker = createApprovedOnlineAvailableWorker();
+        Artifact artifact = createWorkspaceArtifact();
+
+        String response = mockMvc.perform(post(DOCKER_WORKLOAD_PATH, worker.getId())
+                        .with(user("dev-smoke-workspace-admin").roles("ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "image": "alpine:3.20",
+                                  "command": ["sh", "-c", "ls -la /workspace"],
+                                  "timeoutSeconds": 30,
+                                  "resources": {
+                                    "memoryMb": 128,
+                                    "cpuCores": 1
+                                  },
+                                  "gpu": {
+                                    "required": false
+                                  },
+                                  "workspace": {
+                                    "artifactId": "%s",
+                                    "mountPath": "/workspace",
+                                    "readOnly": true
+                                  }
+                                }
+                                """.formatted(artifact.getId())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.workerId").value(worker.getId().toString()))
+                .andExpect(jsonPath("$.status").value("ASSIGNED"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        UUID executionId = UUID.fromString(JsonPath.read(response, "$.executionId"));
+
+        assertThat(executionRepository.findById(executionId))
+                .hasValueSatisfying(execution -> {
+                    JsonNode workspace = execution.getResolvedConfigurationSnapshot().get("workspace");
+                    assertThat(workspace.get("artifactId").asText()).isEqualTo(artifact.getId().toString());
+                    assertThat(workspace.get("mountPath").asText()).isEqualTo("/workspace");
+                    assertThat(workspace.get("readOnly").asBoolean()).isTrue();
+                });
+    }
+
+    @Test
+    void shouldRejectMissingWorkspaceArtifact() throws Exception {
+        createUser("dev-smoke-missing-workspace-admin");
+
+        mockMvc.perform(post(DOCKER_WORKLOAD_PATH, UUID.randomUUID())
+                        .with(user("dev-smoke-missing-workspace-admin").roles("ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "image": "alpine:3.20",
+                                  "command": ["sh", "-c", "ls -la /workspace"],
+                                  "timeoutSeconds": 30,
+                                  "resources": {
+                                    "memoryMb": 128,
+                                    "cpuCores": 1
+                                  },
+                                  "gpu": {
+                                    "required": false
+                                  },
+                                  "workspace": {
+                                    "artifactId": "%s",
+                                    "mountPath": "/workspace",
+                                    "readOnly": true
+                                  }
+                                }
+                                """.formatted(UUID.randomUUID())))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldRejectWorkspaceMountPathOtherThanWorkspace() throws Exception {
+        createUser("dev-smoke-invalid-workspace-path-admin");
+        Artifact artifact = createWorkspaceArtifact();
+
+        mockMvc.perform(post(DOCKER_WORKLOAD_PATH, UUID.randomUUID())
+                        .with(user("dev-smoke-invalid-workspace-path-admin").roles("ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "image": "alpine:3.20",
+                                  "command": ["sh", "-c", "ls -la /workspace"],
+                                  "timeoutSeconds": 30,
+                                  "resources": {
+                                    "memoryMb": 128,
+                                    "cpuCores": 1
+                                  },
+                                  "gpu": {
+                                    "required": false
+                                  },
+                                  "workspace": {
+                                    "artifactId": "%s",
+                                    "mountPath": "/tmp",
+                                    "readOnly": true
+                                  }
+                                }
+                                """.formatted(artifact.getId())))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldRejectWritableWorkspace() throws Exception {
+        createUser("dev-smoke-writable-workspace-admin");
+        Artifact artifact = createWorkspaceArtifact();
+
+        mockMvc.perform(post(DOCKER_WORKLOAD_PATH, UUID.randomUUID())
+                        .with(user("dev-smoke-writable-workspace-admin").roles("ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "image": "alpine:3.20",
+                                  "command": ["sh", "-c", "ls -la /workspace"],
+                                  "timeoutSeconds": 30,
+                                  "resources": {
+                                    "memoryMb": 128,
+                                    "cpuCores": 1
+                                  },
+                                  "gpu": {
+                                    "required": false
+                                  },
+                                  "workspace": {
+                                    "artifactId": "%s",
+                                    "mountPath": "/workspace",
+                                    "readOnly": false
+                                  }
+                                }
+                                """.formatted(artifact.getId())))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -408,6 +550,22 @@ class DevSmokeControllerIntegrationTest {
         assertThat(configuration.get("resources").get("memoryMb").asInt()).isEqualTo(memoryMb);
         assertThat(configuration.get("resources").get("cpuCores").asInt()).isEqualTo(cpuCores);
         assertThat(configuration.get("gpu").get("required").asBoolean()).isFalse();
+        assertThat(configuration.has("workspace")).isFalse();
+    }
+
+    private Artifact createWorkspaceArtifact() {
+        UUID artifactId = UUID.randomUUID();
+        return artifactRepository.save(Artifact.create(
+                artifactId,
+                ArtifactKind.WORKSPACE_PACKAGE,
+                "workspace.zip",
+                "application/zip",
+                123L,
+                "a".repeat(64),
+                artifactId + "/package.zip",
+                LocalDateTime.now(),
+                "dev-smoke"
+        ));
     }
 
     private Worker createApprovedOnlineAvailableWorker() {

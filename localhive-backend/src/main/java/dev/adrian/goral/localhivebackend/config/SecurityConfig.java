@@ -74,7 +74,7 @@ public class SecurityConfig {
                         // Allow system infrastructure endpoints
                         .requestMatchers("/api/health", "/error").permitAll()
 
-                        .requestMatchers("/api/dev/smoke/**").hasRole("ADMIN")
+                        .requestMatchers("/api/dev/smoke/**", "/api/dev/artifacts/**").hasRole("ADMIN")
 
                         .requestMatchers("/api/workers/**").authenticated()
 

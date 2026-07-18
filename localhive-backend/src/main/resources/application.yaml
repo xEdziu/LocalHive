@@ -25,6 +25,9 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
 
 localhive:
+  artifacts:
+    storage-root: ${LOCALHIVE_ARTIFACT_STORAGE_ROOT:.localhive-master/artifacts}
+
   features:
     # Main module: Game Server Management (Default: ENABLED)
     game-servers: true
