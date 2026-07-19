@@ -11,6 +11,7 @@ import dev.adrian.goral.localhivebackend.domain.work.ResourceRequestOverrides;
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinition;
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinitionVersion;
 import dev.adrian.goral.localhivebackend.domain.work.WorkExecution;
+import dev.adrian.goral.localhivebackend.domain.work.WorkExecutionDisplayName;
 import dev.adrian.goral.localhivebackend.domain.work.enums.DefinitionApprovalStatus;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionAssignmentMode;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
@@ -50,6 +51,7 @@ public class DevSmokeController {
     private static final String NO_OP_LOGICAL_IDENTIFIER = "localhive.no-op";
     private static final String NO_OP_NAME = "NO_OP";
     private static final String NO_OP_EXECUTOR_ID = "localhive.no-op";
+    private static final String NO_OP_DISPLAY_NAME = "NO-OP smoke test";
     private static final int NO_OP_EXECUTOR_CONTRACT_VERSION = 1;
     private static final String DOCKER_LOGICAL_IDENTIFIER = "localhive.docker.workload";
     private static final String DOCKER_NAME = "Docker Workload";
@@ -83,7 +85,8 @@ public class DevSmokeController {
             WorkExecution execution = creationService.createOneOffExecution(new CreateOneOffExecutionCommand(
                     noOpVersion.getId(),
                     JsonNodeFactory.instance.objectNode(),
-                    ResourceRequestOverrides.empty()
+                    ResourceRequestOverrides.empty(),
+                    NO_OP_DISPLAY_NAME
             ));
             ExecutionAssignment assignment = assignmentService.assignExecution(
                     execution.getId(),
@@ -122,7 +125,8 @@ public class DevSmokeController {
                             workloadRequest.resources().memoryMb(),
                             workloadRequest.resources().cpuCores(),
                             false
-                    )
+                    ),
+                    workloadRequest.displayName()
             ));
             ExecutionAssignment assignment = assignmentService.assignExecution(
                     execution.getId(),
@@ -286,6 +290,7 @@ public class DevSmokeController {
             throw badRequest("gpu.required must be false. GPU workloads are deferred.");
         }
         DockerWorkloadWorkspaceDto workspace = validateWorkspace(candidate.workspace());
+        String displayName = validateDisplayName(candidate.displayName());
 
         return new DockerWorkloadSmokeRequestDto(
                 image,
@@ -293,7 +298,8 @@ public class DevSmokeController {
                 timeoutSeconds,
                 new DockerWorkloadResourcesDto(memoryMb, cpuCores),
                 new DockerWorkloadGpuDto(false),
-                workspace
+                workspace,
+                displayName
         );
     }
 
@@ -304,6 +310,7 @@ public class DevSmokeController {
                 DEFAULT_DOCKER_TIMEOUT_SECONDS,
                 new DockerWorkloadResourcesDto(DEFAULT_DOCKER_MEMORY_MB, DEFAULT_DOCKER_CPU_CORES),
                 new DockerWorkloadGpuDto(false),
+                null,
                 null
         );
     }
@@ -366,6 +373,14 @@ public class DevSmokeController {
         return value;
     }
 
+    private static String validateDisplayName(String displayName) {
+        try {
+            return WorkExecutionDisplayName.validateExplicit(displayName);
+        } catch (IllegalArgumentException e) {
+            throw badRequest(e.getMessage());
+        }
+    }
+
     private static ResponseStatusException badRequest(String reason) {
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, reason);
     }
@@ -385,7 +400,8 @@ public class DevSmokeController {
             Integer timeoutSeconds,
             DockerWorkloadResourcesDto resources,
             DockerWorkloadGpuDto gpu,
-            DockerWorkloadWorkspaceDto workspace
+            DockerWorkloadWorkspaceDto workspace,
+            String displayName
     ) {
     }
 

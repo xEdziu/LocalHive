@@ -42,7 +42,7 @@ class WorkExecutionMigrationTest {
         Flyway flyway = flyway(null);
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("9");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("10");
 
         try (Connection connection = connection()) {
             assertThat(tables(connection))
@@ -66,6 +66,7 @@ class WorkExecutionMigrationTest {
                             "resolved_required_ram_mb",
                             "resolved_required_cpu_cores",
                             "resolved_gpu_required",
+                            "display_name_snapshot",
                             "failure_code",
                             "failure_message"
                     );
@@ -76,7 +77,8 @@ class WorkExecutionMigrationTest {
                             "work_executions_resolved_required_ram_mb_check",
                             "work_executions_resolved_required_cpu_cores_check",
                             "work_executions_lifecycle_timestamp_check",
-                            "work_executions_failure_fields_check"
+                            "work_executions_failure_fields_check",
+                            "work_executions_display_name_snapshot_check"
                     );
             assertThat(foreignKeys(connection, "work_executions"))
                     .contains(

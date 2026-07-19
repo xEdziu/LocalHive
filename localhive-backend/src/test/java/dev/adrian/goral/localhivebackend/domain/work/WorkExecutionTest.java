@@ -38,10 +38,49 @@ class WorkExecutionTest {
         assertThat(execution.getQueuedAt()).isEqualTo(BASE_TIME);
         assertThat(execution.getAssignedAt()).isNull();
         assertThat(execution.getInstance()).isNull();
+        assertThat(execution.getDisplayNameSnapshot()).isEqualTo("Executor");
         assertThat(execution.getResolvedConfigurationSnapshot().get("threads").intValue()).isEqualTo(2);
         assertThat(execution.getResolvedResourceRequest()).isEqualTo(ResourceRequest.of(1024, 1, false));
         assertThat(execution.getFailureCode()).isNull();
         assertThat(execution.getFailureMessage()).isNull();
+    }
+
+    @Test
+    void shouldStoreTrimmedDisplayNameSnapshot() {
+        WorkExecution execution = WorkExecution.createQueued(
+                version("localhive.execution-display"),
+                null,
+                JsonNodeFactory.instance.objectNode(),
+                ResourceRequest.zero(),
+                "  Custom display name  ",
+                BASE_TIME
+        );
+
+        assertThat(execution.getDisplayNameSnapshot()).isEqualTo("Custom display name");
+    }
+
+    @Test
+    void shouldFallbackBlankDisplayNameSnapshotAndRejectTooLongDisplayName() {
+        WorkDefinitionVersion version = version("localhive.execution-display-fallback");
+
+        WorkExecution execution = WorkExecution.createQueued(
+                version,
+                null,
+                JsonNodeFactory.instance.objectNode(),
+                ResourceRequest.zero(),
+                "   ",
+                BASE_TIME
+        );
+
+        assertThat(execution.getDisplayNameSnapshot()).isEqualTo("Executor");
+        assertThatThrownBy(() -> WorkExecution.createQueued(
+                version,
+                null,
+                JsonNodeFactory.instance.objectNode(),
+                ResourceRequest.zero(),
+                "x".repeat(WorkExecutionDisplayName.MAX_LENGTH + 1),
+                BASE_TIME
+        )).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

@@ -45,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("9");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("10");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -55,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8', '9') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8', '9', '10') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(9);
+        assertThat(appliedMigrationCount).isEqualTo(10);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -152,6 +152,7 @@ class LocalhiveBackendApplicationTests {
                         "resolved_required_ram_mb",
                         "resolved_required_cpu_cores",
                         "resolved_gpu_required",
+                        "display_name_snapshot",
                         "failure_code",
                         "failure_message"
                 );
@@ -170,7 +171,8 @@ class LocalhiveBackendApplicationTests {
                         "work_executions_resolved_required_ram_mb_check",
                         "work_executions_resolved_required_cpu_cores_check",
                         "work_executions_lifecycle_timestamp_check",
-                        "work_executions_failure_fields_check"
+                        "work_executions_failure_fields_check",
+                        "work_executions_display_name_snapshot_check"
                 );
 
         List<String> executionAssignmentColumns = jdbcTemplate.queryForList(

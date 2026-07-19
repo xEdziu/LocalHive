@@ -9,6 +9,7 @@ import dev.adrian.goral.localhivebackend.domain.artifact.ArtifactKind;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
+import dev.adrian.goral.localhivebackend.domain.work.WorkExecutionDisplayName;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionAssignmentMode;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
 import dev.adrian.goral.localhivebackend.repository.UserRepository;
@@ -105,6 +106,7 @@ class DevSmokeControllerIntegrationTest {
         assertThat(executionRepository.findById(executionId))
                 .hasValueSatisfying(execution -> {
                     assertThat(execution.getStatus()).isEqualTo(WorkExecutionStatus.ASSIGNED);
+                    assertThat(execution.getDisplayNameSnapshot()).isEqualTo("NO-OP smoke test");
                     assertThat(assignmentRepository.findByExecution(execution))
                             .hasValueSatisfying(assignment -> {
                                 assertThat(assignment.getExecution().getId()).isEqualTo(executionId);
@@ -139,6 +141,7 @@ class DevSmokeControllerIntegrationTest {
                 .hasValueSatisfying(execution -> {
                     assertThat(execution.getStatus()).isEqualTo(WorkExecutionStatus.ASSIGNED);
                     assertThat(execution.getInstance()).isNull();
+                    assertThat(execution.getDisplayNameSnapshot()).isEqualTo("Docker workload: alpine:3.20");
                     assertDockerConfiguration(
                             execution.getResolvedConfigurationSnapshot(),
                             "echo LocalHive Docker workload",
@@ -168,6 +171,7 @@ class DevSmokeControllerIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
+                                  "displayName": "  Custom docker smoke  ",
                                   "image": "alpine:3.20",
                                   "command": ["sh", "-c", "echo custom"],
                                   "timeoutSeconds": 45,
@@ -196,6 +200,7 @@ class DevSmokeControllerIntegrationTest {
         assertThat(executionRepository.findById(executionId))
                 .hasValueSatisfying(execution -> {
                     assertThat(execution.getStatus()).isEqualTo(WorkExecutionStatus.ASSIGNED);
+                    assertThat(execution.getDisplayNameSnapshot()).isEqualTo("Custom docker smoke");
                     assertDockerConfiguration(
                             execution.getResolvedConfigurationSnapshot(),
                             "echo custom",
@@ -210,6 +215,41 @@ class DevSmokeControllerIntegrationTest {
                             .hasValueSatisfying(assignment ->
                                     assertThat(assignment.getAssignmentMode()).isEqualTo(ExecutionAssignmentMode.REQUIRE));
                 });
+    }
+
+    @Test
+    void shouldFallbackBlankDockerDisplayName() throws Exception {
+        createUser("dev-smoke-blank-display-admin");
+        Worker worker = createApprovedOnlineAvailableWorker();
+
+        String response = mockMvc.perform(post(DOCKER_WORKLOAD_PATH, worker.getId())
+                        .with(user("dev-smoke-blank-display-admin").roles("ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "displayName": "   ",
+                                  "image": "alpine:3.20",
+                                  "command": ["sh", "-c", "echo fallback"],
+                                  "timeoutSeconds": 30,
+                                  "resources": {
+                                    "memoryMb": 128,
+                                    "cpuCores": 1
+                                  },
+                                  "gpu": {
+                                    "required": false
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        UUID executionId = UUID.fromString(JsonPath.read(response, "$.executionId"));
+
+        assertThat(executionRepository.findById(executionId))
+                .hasValueSatisfying(execution ->
+                        assertThat(execution.getDisplayNameSnapshot()).isEqualTo("Docker workload: alpine:3.20"));
     }
 
     @Test
@@ -512,6 +552,31 @@ class DevSmokeControllerIntegrationTest {
                                   }
                                 }
                                 """))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldRejectTooLongDockerDisplayName() throws Exception {
+        createUser("dev-smoke-too-long-display-admin");
+
+        mockMvc.perform(post(DOCKER_WORKLOAD_PATH, UUID.randomUUID())
+                        .with(user("dev-smoke-too-long-display-admin").roles("ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "displayName": "%s",
+                                  "image": "alpine:3.20",
+                                  "command": ["sh", "-c", "echo LocalHive Docker workload"],
+                                  "timeoutSeconds": 30,
+                                  "resources": {
+                                    "memoryMb": 128,
+                                    "cpuCores": 1
+                                  },
+                                  "gpu": {
+                                    "required": false
+                                  }
+                                }
+                                """.formatted("x".repeat(WorkExecutionDisplayName.MAX_LENGTH + 1))))
                 .andExpect(status().isBadRequest());
     }
 

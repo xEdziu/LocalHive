@@ -8,6 +8,12 @@ import java.util.UUID;
 public record CreateOneOffExecutionCommand(
         UUID definitionVersionId,
         JsonNode configurationOverrides,
-        ResourceRequestOverrides resourceOverrides
+        ResourceRequestOverrides resourceOverrides,
+        String displayName
 ) {
+    public CreateOneOffExecutionCommand(UUID definitionVersionId,
+                                        JsonNode configurationOverrides,
+                                        ResourceRequestOverrides resourceOverrides) {
+        this(definitionVersionId, configurationOverrides, resourceOverrides, null);
+    }
 }

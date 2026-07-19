@@ -8,6 +8,7 @@ import dev.adrian.goral.localhivebackend.domain.work.ResourceRequest;
 import dev.adrian.goral.localhivebackend.domain.work.ResourceRequestOverrides;
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinitionVersion;
 import dev.adrian.goral.localhivebackend.domain.work.WorkExecution;
+import dev.adrian.goral.localhivebackend.domain.work.WorkExecutionDisplayName;
 import dev.adrian.goral.localhivebackend.domain.work.WorkInstance;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
@@ -65,7 +66,8 @@ class WorkExecutionCreationServiceTest {
         WorkExecution execution = executionCreationService.createOneOffExecution(new CreateOneOffExecutionCommand(
                 version.getId(),
                 overridesConfiguration(),
-                ResourceRequestOverrides.of(2048, null, true)
+                ResourceRequestOverrides.of(2048, null, true),
+                "  Prime search batch  "
         ));
 
         assertThat(execution.getId()).isNotNull();
@@ -73,6 +75,7 @@ class WorkExecutionCreationServiceTest {
         assertThat(execution.getDefinitionVersion().getId()).isEqualTo(version.getId());
         assertThat(execution.getStatus()).isEqualTo(WorkExecutionStatus.QUEUED);
         assertThat(execution.getCreatedAt()).isEqualTo(execution.getQueuedAt());
+        assertThat(execution.getDisplayNameSnapshot()).isEqualTo("Prime search batch");
         assertThat(execution.getResolvedConfigurationSnapshot().at("/limits/threads").intValue()).isEqualTo(4);
         assertThat(execution.getResolvedConfigurationSnapshot().at("/limits/batch").intValue()).isEqualTo(100);
         assertThat(execution.getResolvedConfigurationSnapshot().get("array").get(0).intValue()).isEqualTo(3);
@@ -98,6 +101,38 @@ class WorkExecutionCreationServiceTest {
 
         assertThat(execution.getResolvedConfigurationSnapshot().at("/limits/threads").intValue()).isEqualTo(2);
         assertThat(execution.getResolvedResourceRequest()).isEqualTo(ResourceRequest.of(512, 1, false));
+        assertThat(execution.getDisplayNameSnapshot()).isEqualTo("Execution executor");
+    }
+
+    @Test
+    void shouldFallbackBlankOneOffDisplayNameAndRejectTooLongDisplayName() {
+        UUID adminUserId = createUser("one-off-display-admin").getId();
+        WorkDefinitionVersion noOpVersion = definitionManagementService.createLocalDefinition(new DefinitionContentCommand(
+                "localhive.no-op-display-" + UUID.randomUUID(),
+                WorkType.TASK,
+                "NO_OP",
+                null,
+                "localhive.no-op",
+                1,
+                JsonNodeFactory.instance.objectNode().put("message", "noop"),
+                ResourceRequest.zero(),
+                adminUserId
+        ));
+
+        WorkExecution execution = executionCreationService.createOneOffExecution(new CreateOneOffExecutionCommand(
+                noOpVersion.getId(),
+                null,
+                null,
+                "   "
+        ));
+
+        assertThat(execution.getDisplayNameSnapshot()).isEqualTo("NO-OP smoke test");
+        assertThatThrownBy(() -> executionCreationService.createOneOffExecution(new CreateOneOffExecutionCommand(
+                noOpVersion.getId(),
+                null,
+                null,
+                "x".repeat(WorkExecutionDisplayName.MAX_LENGTH + 1)
+        ))).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -162,6 +197,7 @@ class WorkExecutionCreationServiceTest {
         assertThat(execution.getInstance().getId()).isEqualTo(instance.getId());
         assertThat(execution.getDefinitionVersion().getId()).isEqualTo(version.getId());
         assertThat(execution.getStatus()).isEqualTo(WorkExecutionStatus.QUEUED);
+        assertThat(execution.getDisplayNameSnapshot()).isEqualTo("Execution Instance");
         assertThat(execution.getResolvedConfigurationSnapshot().at("/limits/threads").intValue()).isEqualTo(4);
         assertThat(execution.getResolvedResourceRequest()).isEqualTo(ResourceRequest.of(1024, 4, true));
         assertThat(executionRepository.findByStatus(WorkExecutionStatus.QUEUED)).isNotEmpty();

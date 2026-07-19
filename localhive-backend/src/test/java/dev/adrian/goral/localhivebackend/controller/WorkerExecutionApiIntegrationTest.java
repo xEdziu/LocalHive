@@ -119,6 +119,7 @@ class WorkerExecutionApiIntegrationTest {
                         .header(API_KEY_HEADER, worker.rawApiKey()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.executionId").value(execution.getId().toString()))
+                .andExpect(jsonPath("$.displayName").value("NO-OP smoke test"))
                 .andExpect(jsonPath("$.executorId").value("localhive.no-op"))
                 .andExpect(jsonPath("$.executorContractVersion").value(1))
                 .andExpect(jsonPath("$.configuration.message").value("noop"))
@@ -164,6 +165,31 @@ class WorkerExecutionApiIntegrationTest {
         assertThat(attemptRepository.findByExecution(execution))
                 .hasValueSatisfying(attempt -> assertThat(attempt.getStatus())
                         .isEqualTo(ExecutionAttemptStatus.SUCCEEDED));
+    }
+
+    @Test
+    void shouldReturnDockerDisplayNameInClaimResponse() throws Exception {
+        WorkerCredentials worker = createApprovedWorker("api-docker-display");
+        WorkDefinitionVersion dockerVersion = dockerVersion();
+        WorkExecution execution = createAssignedDockerExecution(dockerVersion, worker.worker());
+
+        mockMvc.perform(post(
+                        "/api/workers/{workerId}/assigned-executions/claim-next",
+                        worker.worker().getId()
+                )
+                        .header(API_KEY_HEADER, worker.rawApiKey()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.executionId").value(execution.getId().toString()))
+                .andExpect(jsonPath("$.displayName").value("Docker workload: alpine:3.20"))
+                .andExpect(jsonPath("$.executorId").value("localhive.docker.workload"))
+                .andExpect(jsonPath("$.executorContractVersion").value(1))
+                .andExpect(jsonPath("$.configuration.image").value("alpine:3.20"))
+                .andExpect(jsonPath("$.requiredRamMb").value(128))
+                .andExpect(jsonPath("$.requiredCpuCores").value(1))
+                .andExpect(jsonPath("$.gpuRequired").value(false))
+                .andExpect(jsonPath("$.leaseToken").isNotEmpty())
+                .andExpect(jsonPath("$.leaseExpiresAt").exists())
+                .andExpect(content().string(not(containsString("leaseTokenHash"))));
     }
 
     @Test
@@ -328,6 +354,21 @@ class WorkerExecutionApiIntegrationTest {
         return execution;
     }
 
+    private WorkExecution createAssignedDockerExecution(WorkDefinitionVersion dockerVersion, Worker worker) {
+        WorkExecution execution = creationService.createOneOffExecution(new CreateOneOffExecutionCommand(
+                dockerVersion.getId(),
+                null,
+                null
+        ));
+        assignmentService.assignExecution(
+                execution.getId(),
+                worker.getId(),
+                ExecutionAssignmentMode.AUTO,
+                LocalDateTime.now()
+        );
+        return execution;
+    }
+
     private WorkDefinitionVersion noOpVersion() {
         createAdminUser("api-no-op-admin");
         return definitionRepository.findByLogicalIdentifier("localhive.no-op")
@@ -342,6 +383,23 @@ class WorkerExecutionApiIntegrationTest {
                         noOpConfiguration(),
                         ResourceRequest.zero(),
                         createAdminUser("api-no-op-creator").getId()
+                )));
+    }
+
+    private WorkDefinitionVersion dockerVersion() {
+        createAdminUser("api-docker-admin");
+        return definitionRepository.findByLogicalIdentifier("localhive.docker.workload")
+                .flatMap(definition -> versionRepository.findByDefinitionAndVersionNumber(definition, 1))
+                .orElseGet(() -> definitionManagementService.createLocalDefinition(new DefinitionContentCommand(
+                        "localhive.docker.workload",
+                        WorkType.TASK,
+                        "Docker Workload",
+                        null,
+                        "localhive.docker.workload",
+                        1,
+                        dockerConfiguration(),
+                        ResourceRequest.of(128, 1, false),
+                        createAdminUser("api-docker-creator").getId()
                 )));
     }
 
@@ -373,6 +431,19 @@ class WorkerExecutionApiIntegrationTest {
     private static ObjectNode noOpConfiguration() {
         ObjectNode configuration = JsonNodeFactory.instance.objectNode();
         configuration.put("message", "noop");
+        return configuration;
+    }
+
+    private static ObjectNode dockerConfiguration() {
+        ObjectNode configuration = JsonNodeFactory.instance.objectNode();
+        configuration.put("image", "alpine:3.20");
+        configuration.putArray("command").add("sh").add("-c").add("echo LocalHive Docker workload");
+        configuration.put("timeoutSeconds", 30);
+        ObjectNode resources = configuration.putObject("resources");
+        resources.put("memoryMb", 128);
+        resources.put("cpuCores", 1);
+        ObjectNode gpu = configuration.putObject("gpu");
+        gpu.put("required", false);
         return configuration;
     }
 

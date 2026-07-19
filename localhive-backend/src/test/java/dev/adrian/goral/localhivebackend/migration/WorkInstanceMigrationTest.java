@@ -38,7 +38,7 @@ class WorkInstanceMigrationTest {
         Flyway flyway = flyway(null);
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("9");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("10");
 
         try (Connection connection = connection()) {
             assertDefaultResourceRequest(connection, versionId);

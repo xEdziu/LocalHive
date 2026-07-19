@@ -15,6 +15,7 @@ import java.util.UUID;
 
 public record WorkerExecutionClaimResponseDto(
         UUID executionId,
+        String displayName,
         String executorId,
         int executorContractVersion,
         Map<String, Object> configuration,
@@ -31,6 +32,7 @@ public record WorkerExecutionClaimResponseDto(
         ResourceRequest resourceRequest = execution.getResolvedResourceRequest();
         return new WorkerExecutionClaimResponseDto(
                 execution.getId(),
+                execution.getDisplayNameSnapshot(),
                 definitionVersion.getExecutorId(),
                 definitionVersion.getExecutorContractVersion(),
                 toJsonObject(execution.getResolvedConfigurationSnapshot()),

@@ -49,6 +49,7 @@ public class WorkExecutionCreationService {
                 null,
                 resolvedConfiguration,
                 resolvedResourceRequest,
+                command.displayName(),
                 LocalDateTime.now()
         );
         return executionRepository.save(execution);
@@ -79,6 +80,7 @@ public class WorkExecutionCreationService {
                 instance,
                 resolvedConfiguration,
                 resolvedResourceRequest,
+                command.displayName(),
                 LocalDateTime.now()
         );
         return executionRepository.save(execution);

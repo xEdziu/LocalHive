@@ -49,6 +49,9 @@ public class WorkExecution {
     @ToString.Exclude
     private WorkInstance instance;
 
+    @Column(name = "display_name_snapshot", nullable = false, length = WorkExecutionDisplayName.MAX_LENGTH, updatable = false)
+    private String displayNameSnapshot;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private WorkExecutionStatus status;
@@ -97,12 +100,19 @@ public class WorkExecution {
 
     private WorkExecution(WorkDefinitionVersion definitionVersion,
                           WorkInstance instance,
+                          String displayNameSnapshot,
                           JsonNode resolvedConfigurationSnapshot,
                           ResourceRequest resolvedResourceRequest,
                           LocalDateTime createdAt) {
         this.definitionVersion = Objects.requireNonNull(definitionVersion, "definitionVersion must not be null.");
         requireInstanceMatchesDefinitionVersion(definitionVersion, instance);
         this.instance = instance;
+        this.displayNameSnapshot = WorkExecutionDisplayName.resolve(
+                displayNameSnapshot,
+                definitionVersion,
+                instance,
+                requireObjectSnapshot(resolvedConfigurationSnapshot)
+        );
         this.status = WorkExecutionStatus.QUEUED;
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt must not be null.");
         this.queuedAt = createdAt;
@@ -117,12 +127,29 @@ public class WorkExecution {
                                              WorkInstance instance,
                                              JsonNode resolvedConfigurationSnapshot,
                                              ResourceRequest resolvedResourceRequest,
+                                             String displayNameSnapshot,
                                              LocalDateTime createdAt) {
         return new WorkExecution(
                 definitionVersion,
                 instance,
+                displayNameSnapshot,
                 resolvedConfigurationSnapshot,
                 resolvedResourceRequest,
+                createdAt
+        );
+    }
+
+    public static WorkExecution createQueued(WorkDefinitionVersion definitionVersion,
+                                             WorkInstance instance,
+                                             JsonNode resolvedConfigurationSnapshot,
+                                             ResourceRequest resolvedResourceRequest,
+                                             LocalDateTime createdAt) {
+        return createQueued(
+                definitionVersion,
+                instance,
+                resolvedConfigurationSnapshot,
+                resolvedResourceRequest,
+                null,
                 createdAt
         );
     }
