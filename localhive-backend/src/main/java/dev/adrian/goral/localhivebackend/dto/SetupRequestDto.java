@@ -23,4 +23,6 @@ public class SetupRequestDto {
             message = "Password must contain upper, lower, digit and special character"
     )
     private String password;
+
+    private String dataRoot;
 }

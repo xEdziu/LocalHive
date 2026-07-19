@@ -28,7 +28,11 @@ public class SetupController {
         log.info("Received request to complete First-Time Setup for user: {}", requestDto.getUsername());
 
         try {
-            setupService.completeFirstTimeSetup(requestDto.getUsername(), requestDto.getPassword());
+            setupService.completeFirstTimeSetup(
+                    requestDto.getUsername(),
+                    requestDto.getPassword(),
+                    requestDto.getDataRoot()
+            );
 
             // Return a standard JSON success response
             return ResponseEntity.ok(Map.of(
@@ -36,6 +40,9 @@ public class SetupController {
                     "message", "System configured successfully. You can now log in."
             ));
 
+        } catch (IllegalArgumentException e) {
+            log.warn("Setup request validation failed: {}", e.getMessage());
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
         } catch (IllegalStateException e) {
             // Catches the case where someone tries to run setup on an already configured system
             log.warn("Setup attempt failed: {}", e.getMessage());

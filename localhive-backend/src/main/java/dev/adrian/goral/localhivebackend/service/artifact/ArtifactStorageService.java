@@ -1,6 +1,7 @@
 package dev.adrian.goral.localhivebackend.service.artifact;
 
 import dev.adrian.goral.localhivebackend.domain.artifact.Artifact;
+import dev.adrian.goral.localhivebackend.service.storage.StorageConfigurationService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -20,15 +21,19 @@ import java.util.UUID;
 @Service
 public class ArtifactStorageService {
 
-    private final Path storageRoot;
+    private final StorageConfigurationService storageConfigurationService;
+    private final Path defaultStorageRoot;
 
     public ArtifactStorageService(
+            StorageConfigurationService storageConfigurationService,
             @Value("${localhive.artifacts.storage-root:.localhive-master/artifacts}") String storageRoot
     ) {
-        this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
+        this.storageConfigurationService = storageConfigurationService;
+        this.defaultStorageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
     }
 
     public StoredArtifact storeWorkspacePackage(UUID artifactId, MultipartFile file) {
+        Path storageRoot = storageRootPath();
         Path relativePath = Path.of(artifactId.toString(), "package.zip");
         Path targetPath = storageRoot.resolve(relativePath).normalize();
         if (!targetPath.startsWith(storageRoot)) {
@@ -66,6 +71,7 @@ public class ArtifactStorageService {
             throw new IllegalArgumentException("maxSizeBytes must be positive.");
         }
 
+        Path storageRoot = storageRootPath();
         Path relativePath = Path.of(artifactId.toString(), "artifact");
         Path targetPath = storageRoot.resolve(relativePath).normalize();
         if (!targetPath.startsWith(storageRoot)) {
@@ -99,6 +105,7 @@ public class ArtifactStorageService {
     }
 
     public Path resolveReadablePath(Artifact artifact) {
+        Path storageRoot = storageRootPath();
         Path resolvedPath = storageRoot.resolve(artifact.getStoragePath()).normalize();
         if (!resolvedPath.startsWith(storageRoot)) {
             throw new IllegalArgumentException("Artifact not found.");
@@ -111,7 +118,7 @@ public class ArtifactStorageService {
     }
 
     public String storageRoot() {
-        return storageRoot.toString();
+        return storageRootPath().toString();
     }
 
     public void deleteQuietly(String storagePath) {
@@ -119,12 +126,17 @@ public class ArtifactStorageService {
             return;
         }
 
+        Path storageRoot = storageRootPath();
         Path resolvedPath = storageRoot.resolve(storagePath).normalize();
         if (!resolvedPath.startsWith(storageRoot)) {
             return;
         }
 
         deleteQuietly(resolvedPath);
+    }
+
+    private Path storageRootPath() {
+        return storageConfigurationService.artifactsRoot(defaultStorageRoot);
     }
 
     private static void deleteQuietly(Path path) {

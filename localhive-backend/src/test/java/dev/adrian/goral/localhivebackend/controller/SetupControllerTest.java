@@ -18,7 +18,9 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import tools.jackson.databind.json.JsonMapper;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -98,7 +100,51 @@ class SetupControllerTest {
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status").value("success"));
 
-        verify(setupService).completeFirstTimeSetup("Admin_01", "StrongPassword123!");
+        verify(setupService).completeFirstTimeSetup("Admin_01", "StrongPassword123!", null);
+    }
+
+    @Test
+    @DisplayName("Should pass optional dataRoot to setup service")
+    void shouldPassOptionalDataRootToSetupService() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(true);
+        var request = validSetupPayload();
+        request.put("dataRoot", "D:/LocalHiveData");
+
+        // When + Then
+        mockMvc.perform(post("/api/setup")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("success"));
+
+        verify(setupService).completeFirstTimeSetup("Admin_01", "StrongPassword123!", "D:/LocalHiveData");
+    }
+
+    @Test
+    @DisplayName("Should return 400 when setup service rejects dataRoot")
+    void shouldReturnBadRequestWhenSetupServiceRejectsDataRoot() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(true);
+        doThrow(new IllegalArgumentException("dataRoot must be an absolute path."))
+                .when(setupService)
+                .completeFirstTimeSetup(anyString(), anyString(), any());
+
+        var request = validSetupPayload();
+        request.put("dataRoot", "relative/path");
+
+        // When + Then
+        mockMvc.perform(post("/api/setup")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").value("dataRoot must be an absolute path."))
+                .andExpect(jsonPath("$.timestamp").exists());
     }
 
     @Test
@@ -118,7 +164,7 @@ class SetupControllerTest {
                 .andExpect(jsonPath("$.message").value("System is already configured. Setup wizard is locked."))
                 .andExpect(jsonPath("$.timestamp").exists());
 
-        verify(setupService, never()).completeFirstTimeSetup(anyString(), anyString());
+        verify(setupService, never()).completeFirstTimeSetup(anyString(), anyString(), isNull());
     }
 
     @Test
@@ -141,7 +187,7 @@ class SetupControllerTest {
                 .andExpect(jsonPath("$.fieldErrors.username")
                         .value("Username can contain only letters, digits, dot, underscore and hyphen"));
 
-        verify(setupService, never()).completeFirstTimeSetup(anyString(), anyString());
+        verify(setupService, never()).completeFirstTimeSetup(anyString(), anyString(), any());
     }
 
     @Test
@@ -164,7 +210,7 @@ class SetupControllerTest {
                 .andExpect(jsonPath("$.fieldErrors.password")
                         .value("Password must contain upper, lower, digit and special character"));
 
-        verify(setupService, never()).completeFirstTimeSetup(anyString(), anyString());
+        verify(setupService, never()).completeFirstTimeSetup(anyString(), anyString(), any());
     }
 
     @Test
@@ -185,7 +231,7 @@ class SetupControllerTest {
                 .andExpect(jsonPath("$.status").value("error"))
                 .andExpect(jsonPath("$.fieldErrors.username").value("Username cannot be blank"));
 
-        verify(setupService, never()).completeFirstTimeSetup(anyString(), anyString());
+        verify(setupService, never()).completeFirstTimeSetup(anyString(), anyString(), any());
     }
 
     @Test
@@ -195,7 +241,7 @@ class SetupControllerTest {
         when(setupService.isSetupRequired()).thenReturn(true);
         doThrow(new IllegalStateException("System is already configured. Cannot run setup again."))
                 .when(setupService)
-                .completeFirstTimeSetup(anyString(), anyString());
+                .completeFirstTimeSetup(anyString(), anyString(), any());
 
         // When + Then
         mockMvc.perform(post("/api/setup")

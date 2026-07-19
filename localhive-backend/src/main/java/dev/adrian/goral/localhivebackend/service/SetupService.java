@@ -2,6 +2,7 @@ package dev.adrian.goral.localhivebackend.service;
 
 import dev.adrian.goral.localhivebackend.domain.User;
 import dev.adrian.goral.localhivebackend.repository.UserRepository;
+import dev.adrian.goral.localhivebackend.service.storage.StorageConfigurationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -16,6 +17,8 @@ public class SetupService {
     private final UserRepository userRepository;
 
     private final PasswordEncoder passwordEncoder;
+
+    private final StorageConfigurationService storageConfigurationService;
 
     // In-memory cache.
     // Null = unknown (needs DB check), False = system is fully configured.
@@ -59,10 +62,12 @@ public class SetupService {
      * @param rawPassword the raw password (will be hashed)
      */
     @Transactional
-    public void completeFirstTimeSetup(String username, String rawPassword) {
+    public void completeFirstTimeSetup(String username, String rawPassword, String dataRoot) {
         if (!isSetupRequired()) {
             throw new IllegalStateException("System is already configured. Cannot run setup again.");
         }
+
+        storageConfigurationService.configureDataRootIfPresent(dataRoot);
 
         String securedHash = passwordEncoder.encode(rawPassword);
 
