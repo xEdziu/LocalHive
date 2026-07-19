@@ -12,10 +12,13 @@ localhive-backend/src/main/resources/db/migration/V4__add_work_instances.sql
 localhive-backend/src/main/resources/db/migration/V5__add_work_executions.sql
 localhive-backend/src/main/resources/db/migration/V6__add_execution_attempts_and_assignments.sql
 localhive-backend/src/main/resources/db/migration/V7__add_execution_assignment_lease.sql
+localhive-backend/src/main/resources/db/migration/V8__add_artifacts.sql
+localhive-backend/src/main/resources/db/migration/V9__add_execution_artifacts.sql
 ```
 
-The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. V3 adds Work Definition identity and immutable version persistence. V4 adds Work Instance persistence, configuration overrides, and relational resource defaults/overrides. V5 adds Work Execution lifecycle persistence with resolved configuration and resource snapshots. V6 adds one Master-side execution assignment per execution and one concrete execution attempt once an assigned execution starts running. Metrics, result storage, artifacts, scheduler queues, and compute-grid runtime tables are intentionally excluded until those domains are designed and implemented.
+The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. V3 adds Work Definition identity and immutable version persistence. V4 adds Work Instance persistence, configuration overrides, and relational resource defaults/overrides. V5 adds Work Execution lifecycle persistence with resolved configuration and resource snapshots. V6 adds one Master-side execution assignment per execution and one concrete execution attempt once an assigned execution starts running. Metrics, scheduler queues, and compute-grid runtime tables are intentionally excluded until those domains are designed and implemented.
 V7 adds worker claim lease fields directly to `execution_assignments`. The raw lease token is never stored; only `lease_token_hash` is persisted. V7 does not add a scheduler, polling table, or separate lease table.
+V8 adds generic artifact metadata for workspace packages. V9 adds execution output artifact persistence and links each `EXECUTION_OUTPUT` artifact to the `WorkExecution` and uploading worker. Metrics, scheduler queues, compute-grid runtime tables, output retention policy, and large artifact storage are intentionally excluded until those domains are designed and implemented.
 
 ## Integration Tests
 
@@ -39,6 +42,8 @@ No manually running LocalHive PostgreSQL instance is required for tests. Testcon
 | `work_executions` | Execution lifecycle records created from an approved definition version or enabled work instance. |
 | `execution_assignments` | Master-side decision assigning one work execution to one eligible worker, including worker claim lease metadata. |
 | `execution_attempts` | Concrete runtime attempt for an assigned execution; currently limited to attempt number `1`. |
+| `artifacts` | Generic artifact metadata and internal storage path for workspace packages and execution outputs. |
+| `execution_artifacts` | Links `EXECUTION_OUTPUT` artifacts to one work execution and the worker that uploaded them. |
 
 ## Entity Relationship Diagram
 
@@ -160,6 +165,27 @@ erDiagram
         string status
     }
 
+    ARTIFACTS {
+        UUID id PK
+        string kind
+        string original_filename
+        string content_type
+        bigint size_bytes
+        string sha256
+        string storage_path
+        timestamp created_at
+        string created_by
+    }
+
+    EXECUTION_ARTIFACTS {
+        UUID id PK
+        UUID execution_id FK
+        UUID artifact_id FK
+        UUID uploaded_by_worker_id FK
+        string relative_path
+        timestamp created_at
+    }
+
     GAME_TEMPLATES {
         UUID id PK
         int default_port
@@ -201,8 +227,11 @@ erDiagram
     WORK_INSTANCES ||--o{ WORK_EXECUTIONS : creates
     WORK_EXECUTIONS ||--o| EXECUTION_ASSIGNMENTS : assigned
     WORK_EXECUTIONS ||--o| EXECUTION_ATTEMPTS : attempts
+    WORK_EXECUTIONS ||--o{ EXECUTION_ARTIFACTS : outputs
     EXECUTION_ASSIGNMENTS ||--o| EXECUTION_ATTEMPTS : produces
     WORKERS ||--o{ EXECUTION_ASSIGNMENTS : receives
+    WORKERS ||--o{ EXECUTION_ARTIFACTS : uploads
+    ARTIFACTS ||--o| EXECUTION_ARTIFACTS : linked
     USERS ||--o{ WORK_DEFINITION_VERSIONS : created
     USERS ||--o{ WORK_DEFINITION_VERSIONS : reviewed
 ```
@@ -223,6 +252,8 @@ erDiagram
 | `work_executions` | Primary key on `id`; foreign keys to `work_definition_versions(id)` and optional `work_instances(id)`; checks for lifecycle status values, JSON object resolved configuration snapshot, non-negative resolved RAM/CPU resources, lifecycle timestamp consistency, and failure fields for failed executions. |
 | `execution_assignments` | Primary key on `id`; unique `execution_id`; foreign keys to `work_executions(id)` and `workers(id)`; check for assignment modes `AUTO`, `PREFER`, and `REQUIRE`; check that claim lease fields are either all null or all present; index on `worker_id`. |
 | `execution_attempts` | Primary key on `id`; unique `execution_id`; unique `(execution_id, attempt_number)`; foreign keys to `work_executions(id)` and `execution_assignments(id)`; check that `attempt_number = 1`; checks for attempt statuses and terminal timestamp/failure-field consistency. |
+| `artifacts` | Primary key on `id`; enum check for `WORKSPACE_PACKAGE` and `EXECUTION_OUTPUT`; checks for non-blank original filename and storage path, nullable non-blank content type, non-negative size, and 64-character SHA-256. |
+| `execution_artifacts` | Primary key on `id`; unique `artifact_id`; foreign keys to `work_executions(id)`, `artifacts(id)`, and `workers(id)`; check for non-blank relative path. |
 
 ## Worker State
 
@@ -279,4 +310,10 @@ Execution Attempt records the concrete runtime attempt for an assigned execution
 
 Current attempt statuses are `RUNNING`, `SUCCEEDED`, `FAILED`, and `CANCELLED`. Running attempts have no completion or failure fields. Succeeded and cancelled attempts require `completed_at` and have no failure fields. Failed attempts require `completed_at` and a non-blank `failure_code`; `failure_message` is optional but must be non-blank when present.
 
-V6 does not introduce leases, claim tokens, scheduler ownership, REST polling, Agent transport changes, progress, logs, results, artifacts, executor registry, or retry policy. V7 introduces assignment lease fields only; Agent executor implementation, scheduler ownership, progress, logs, results, artifacts, executor registry, and retry policy remain out of scope.
+V6 does not introduce leases, claim tokens, scheduler ownership, REST polling, Agent transport changes, progress, logs, results, artifacts, executor registry, or retry policy. V7 introduces assignment lease fields only; Agent executor implementation, scheduler ownership, progress, logs, results, artifacts, executor registry, and retry policy remain out of scope for V7.
+
+## Artifacts
+
+V8 adds generic artifact metadata in `artifacts`. V9 adds `execution_artifacts`, which links each `EXECUTION_OUTPUT` artifact to one `work_executions.id` and the worker that uploaded it. Output artifacts are documented in [Output Artifacts](output-artifacts.md).
+
+The internal `storage_path` column is not exposed by worker or admin DTOs. For execution outputs, Master stores content under a Master-generated path such as `.localhive-master/artifacts/<artifactId>/artifact`; the uploaded `relative_path` and original filename remain metadata only.
