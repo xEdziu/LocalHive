@@ -12,6 +12,11 @@ spring:
     password: ${DB_PASS:defaultPassword}
     driver-class-name: org.postgresql.Driver
 
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 51MB
+
   # Hibernate (ORM)
   jpa:
     # Flyway manages schema changes. Hibernate validates entity mappings against the migrated schema.
@@ -27,6 +32,7 @@ spring:
 localhive:
   artifacts:
     storage-root: ${LOCALHIVE_ARTIFACT_STORAGE_ROOT:.localhive-master/artifacts}
+    max-output-size-bytes: ${LOCALHIVE_OUTPUT_ARTIFACT_MAX_BYTES:52428800}
 
   features:
     # Main module: Game Server Management (Default: ENABLED)

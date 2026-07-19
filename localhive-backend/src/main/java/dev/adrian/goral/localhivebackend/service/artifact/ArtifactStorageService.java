@@ -10,6 +10,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -60,6 +61,43 @@ public class ArtifactStorageService {
         }
     }
 
+    public StoredArtifact storeExecutionOutput(UUID artifactId, MultipartFile file, long maxSizeBytes) {
+        if (maxSizeBytes < 1) {
+            throw new IllegalArgumentException("maxSizeBytes must be positive.");
+        }
+
+        Path relativePath = Path.of(artifactId.toString(), "artifact");
+        Path targetPath = storageRoot.resolve(relativePath).normalize();
+        if (!targetPath.startsWith(storageRoot)) {
+            throw new IllegalStateException("Artifact storage path is invalid.");
+        }
+        if (Files.exists(targetPath)) {
+            throw new IllegalStateException("Artifact file already exists.");
+        }
+
+        try {
+            Files.createDirectories(targetPath.getParent());
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            long sizeBytes = copyWithDigestAndLimit(file, targetPath, digest, maxSizeBytes);
+
+            return new StoredArtifact(
+                    relativePath.toString().replace('\\', '/'),
+                    sizeBytes,
+                    HexFormat.of().formatHex(digest.digest())
+            );
+        } catch (FileAlreadyExistsException e) {
+            throw new IllegalStateException("Artifact file already exists.", e);
+        } catch (IOException e) {
+            deleteQuietly(targetPath);
+            throw new UncheckedIOException("Failed to store artifact.", e);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 algorithm is not available.", e);
+        } catch (RuntimeException e) {
+            deleteQuietly(targetPath);
+            throw e;
+        }
+    }
+
     public Path resolveReadablePath(Artifact artifact) {
         Path resolvedPath = storageRoot.resolve(artifact.getStoragePath()).normalize();
         if (!resolvedPath.startsWith(storageRoot)) {
@@ -95,5 +133,28 @@ public class ArtifactStorageService {
         } catch (IOException ignored) {
             // Best-effort cleanup after a failed store.
         }
+    }
+
+    private static long copyWithDigestAndLimit(MultipartFile file,
+                                               Path targetPath,
+                                               MessageDigest digest,
+                                               long maxSizeBytes) throws IOException {
+        long sizeBytes = 0;
+        byte[] buffer = new byte[8192];
+
+        try (var inputStream = file.getInputStream();
+             var outputStream = Files.newOutputStream(targetPath, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+            int read;
+            while ((read = inputStream.read(buffer)) != -1) {
+                sizeBytes += read;
+                if (sizeBytes > maxSizeBytes) {
+                    throw new ArtifactSizeLimitExceededException("file must be at most 50 MB.");
+                }
+                digest.update(buffer, 0, read);
+                outputStream.write(buffer, 0, read);
+            }
+        }
+
+        return sizeBytes;
     }
 }

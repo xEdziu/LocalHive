@@ -37,7 +37,7 @@ class ExecutionAssignmentLeaseMigrationTest {
         Flyway flyway = flyway(freshPostgres, null);
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("8");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("9");
 
         try (Connection connection = connection(freshPostgres)) {
             assertThat(columns(connection, "execution_assignments"))
@@ -69,7 +69,7 @@ class ExecutionAssignmentLeaseMigrationTest {
         Flyway flyway = flyway(historicalPostgres, null);
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("8");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("9");
 
         try (Connection connection = connection(historicalPostgres)) {
             assertThat(leaseFields(connection, assignmentId))

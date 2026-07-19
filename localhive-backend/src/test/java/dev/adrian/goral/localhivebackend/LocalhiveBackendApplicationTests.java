@@ -45,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("8");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("9");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -55,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8', '9') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(8);
+        assertThat(appliedMigrationCount).isEqualTo(9);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -78,7 +78,8 @@ class LocalhiveBackendApplicationTests {
                 "work_executions",
                 "execution_assignments",
                 "execution_attempts",
-                "artifacts"
+                "artifacts",
+                "execution_artifacts"
         );
 
         List<String> workerColumns = jdbcTemplate.queryForList(
@@ -279,6 +280,36 @@ class LocalhiveBackendApplicationTests {
                         "idx_artifacts_created_at",
                         "idx_artifacts_sha256"
                 );
+
+        List<String> executionArtifactColumns = jdbcTemplate.queryForList(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'execution_artifacts'",
+                String.class
+        );
+        assertThat(executionArtifactColumns)
+                .contains(
+                        "id",
+                        "execution_id",
+                        "artifact_id",
+                        "uploaded_by_worker_id",
+                        "relative_path",
+                        "created_at"
+                );
+
+        List<String> executionArtifactConstraints = jdbcTemplate.queryForList("""
+                select constraint_name
+                from information_schema.table_constraints
+                where table_schema = 'public'
+                  and table_name = 'execution_artifacts'
+                """, String.class);
+        assertThat(executionArtifactConstraints)
+                .contains(
+                        "execution_artifacts_pkey",
+                        "uk_execution_artifacts_artifact_id",
+                        "fk_execution_artifacts_execution_id",
+                        "fk_execution_artifacts_artifact_id",
+                        "fk_execution_artifacts_uploaded_by_worker_id",
+                        "execution_artifacts_relative_path_not_blank_check"
+                );
     }
 
     @Test
@@ -351,12 +382,35 @@ class LocalhiveBackendApplicationTests {
                 ) values (?, ?, ?, ?, ?, ?, current_timestamp)
                 """,
                 UUID.randomUUID(),
-                "OUTPUT",
+                "INVALID",
                 "workspace.zip",
                 12L,
                 "0".repeat(64),
                 UUID.randomUUID() + "/package.zip"
         )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        jdbcTemplate.update("""
+                insert into artifacts (
+                    id,
+                    kind,
+                    original_filename,
+                    content_type,
+                    size_bytes,
+                    sha256,
+                    storage_path,
+                    created_at,
+                    created_by
+                ) values (?, ?, ?, ?, ?, ?, ?, current_timestamp, ?)
+                """,
+                UUID.randomUUID(),
+                "EXECUTION_OUTPUT",
+                "output.txt",
+                "text/plain",
+                12L,
+                "1".repeat(64),
+                UUID.randomUUID() + "/artifact",
+                "schema-test"
+        );
 
         assertThatThrownBy(() -> jdbcTemplate.update("""
                 insert into artifacts (
@@ -394,6 +448,197 @@ class LocalhiveBackendApplicationTests {
                 12L,
                 "0".repeat(63),
                 UUID.randomUUID() + "/package.zip"
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void executionArtifactConstraintsLinkExecutionArtifactAndWorker() {
+        UUID userId = UUID.randomUUID();
+        UUID workerId = UUID.randomUUID();
+        UUID definitionId = UUID.randomUUID();
+        UUID versionId = UUID.randomUUID();
+        UUID executionId = UUID.randomUUID();
+        UUID artifactId = UUID.randomUUID();
+
+        jdbcTemplate.update("""
+                insert into users (
+                    id,
+                    username,
+                    password_hash,
+                    created_at
+                ) values (?, ?, ?, current_timestamp)
+                """,
+                userId,
+                "execution-artifact-user-" + UUID.randomUUID(),
+                "hashed-password"
+        );
+        jdbcTemplate.update("""
+                insert into workers (
+                    id,
+                    api_key_hash,
+                    cpu_cores,
+                    hostname,
+                    ip_address,
+                    os_type,
+                    shared_ram_mb,
+                    approval_status,
+                    connection_status,
+                    availability_status,
+                    total_ram_mb
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                workerId,
+                "hashed-api-key",
+                16,
+                "execution-artifact-worker-" + UUID.randomUUID(),
+                "192.168.1.10",
+                "Linux",
+                8192,
+                "APPROVED",
+                "ONLINE",
+                "AVAILABLE",
+                32768
+        );
+        jdbcTemplate.update("""
+                insert into work_definitions (
+                    id,
+                    logical_identifier,
+                    work_type,
+                    source_type,
+                    created_at
+                ) values (?, ?, ?, ?, current_timestamp)
+                """,
+                definitionId,
+                "localhive.execution-artifact-" + UUID.randomUUID(),
+                "TASK",
+                "LOCAL"
+        );
+        jdbcTemplate.update("""
+                insert into work_definition_versions (
+                    id,
+                    definition_id,
+                    version_number,
+                    name,
+                    executor_id,
+                    executor_contract_version,
+                    executor_configuration,
+                    default_required_ram_mb,
+                    default_required_cpu_cores,
+                    default_gpu_required,
+                    content_checksum,
+                    approval_status,
+                    created_at,
+                    created_by_user_id,
+                    reviewed_at,
+                    reviewed_by_user_id
+                ) values (?, ?, ?, ?, ?, ?, '{}'::jsonb, ?, ?, ?, ?, ?, current_timestamp, ?, current_timestamp, ?)
+                """,
+                versionId,
+                definitionId,
+                1,
+                "Execution Artifact Definition",
+                "localhive.execution-artifact-executor",
+                1,
+                0,
+                0,
+                false,
+                "0".repeat(64),
+                "APPROVED",
+                userId,
+                userId
+        );
+        jdbcTemplate.update("""
+                insert into work_executions (
+                    id,
+                    definition_version_id,
+                    status,
+                    created_at,
+                    queued_at,
+                    resolved_configuration_snapshot,
+                    resolved_required_ram_mb,
+                    resolved_required_cpu_cores,
+                    resolved_gpu_required
+                ) values (?, ?, ?, current_timestamp, current_timestamp, '{}'::jsonb, ?, ?, ?)
+                """,
+                executionId,
+                versionId,
+                "QUEUED",
+                0,
+                0,
+                false
+        );
+        insertOutputArtifact(artifactId, "execution-artifact");
+
+        jdbcTemplate.update("""
+                insert into execution_artifacts (
+                    id,
+                    execution_id,
+                    artifact_id,
+                    uploaded_by_worker_id,
+                    relative_path,
+                    created_at
+                ) values (?, ?, ?, ?, ?, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                executionId,
+                artifactId,
+                workerId,
+                "results/output.txt"
+        );
+
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into execution_artifacts (
+                    id,
+                    execution_id,
+                    artifact_id,
+                    uploaded_by_worker_id,
+                    relative_path,
+                    created_at
+                ) values (?, ?, ?, ?, ?, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                executionId,
+                artifactId,
+                workerId,
+                "results/duplicate.txt"
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        UUID blankPathArtifactId = UUID.randomUUID();
+        insertOutputArtifact(blankPathArtifactId, "execution-artifact-blank-path");
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into execution_artifacts (
+                    id,
+                    execution_id,
+                    artifact_id,
+                    uploaded_by_worker_id,
+                    relative_path,
+                    created_at
+                ) values (?, ?, ?, ?, ?, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                executionId,
+                blankPathArtifactId,
+                workerId,
+                "   "
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        UUID missingExecutionArtifactId = UUID.randomUUID();
+        insertOutputArtifact(missingExecutionArtifactId, "execution-artifact-missing-execution");
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into execution_artifacts (
+                    id,
+                    execution_id,
+                    artifact_id,
+                    uploaded_by_worker_id,
+                    relative_path,
+                    created_at
+                ) values (?, ?, ?, ?, ?, current_timestamp)
+                """,
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                missingExecutionArtifactId,
+                workerId,
+                "results/missing-execution.txt"
         )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
@@ -511,5 +756,30 @@ class LocalhiveBackendApplicationTests {
                 true,
                 -1
         )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    private void insertOutputArtifact(UUID artifactId, String filenamePrefix) {
+        jdbcTemplate.update("""
+                insert into artifacts (
+                    id,
+                    kind,
+                    original_filename,
+                    content_type,
+                    size_bytes,
+                    sha256,
+                    storage_path,
+                    created_at,
+                    created_by
+                ) values (?, ?, ?, ?, ?, ?, ?, current_timestamp, ?)
+                """,
+                artifactId,
+                "EXECUTION_OUTPUT",
+                filenamePrefix + ".txt",
+                "text/plain",
+                12L,
+                "2".repeat(64),
+                artifactId + "/artifact",
+                "schema-test"
+        );
     }
 }
