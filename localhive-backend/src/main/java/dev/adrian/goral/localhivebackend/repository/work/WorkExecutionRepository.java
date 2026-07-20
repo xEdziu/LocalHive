@@ -11,6 +11,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -36,6 +37,21 @@ public interface WorkExecutionRepository extends JpaRepository<WorkExecution, UU
     List<WorkExecution> findAdminExecutions(
             @Param("status") WorkExecutionStatus status,
             @Param("workerId") UUID workerId,
+            Pageable pageable
+    );
+
+    @EntityGraph(attributePaths = {"definitionVersion", "definitionVersion.definition", "instance"})
+    @Query("""
+            SELECT execution
+            FROM WorkExecution execution
+            JOIN ExecutionAssignment assignment ON assignment.execution = execution
+            WHERE assignment.worker.id = :workerId
+              AND execution.status IN :statuses
+            ORDER BY execution.createdAt DESC, execution.id DESC
+            """)
+    List<WorkExecution> findAdminExecutionsByWorkerIdAndStatusIn(
+            @Param("workerId") UUID workerId,
+            @Param("statuses") Collection<WorkExecutionStatus> statuses,
             Pageable pageable
     );
 

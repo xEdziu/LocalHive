@@ -11,6 +11,7 @@ import dev.adrian.goral.localhivebackend.security.ApiErrorResponseWriter;
 import dev.adrian.goral.localhivebackend.security.JwtService;
 import dev.adrian.goral.localhivebackend.service.SetupService;
 import dev.adrian.goral.localhivebackend.service.WorkerRegistryService;
+import dev.adrian.goral.localhivebackend.service.work.AdminWorkerDetailQueryService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,6 +53,9 @@ class AdminWorkerControllerTest {
 
     @MockitoBean
     private WorkerRegistryService workerRegistryService;
+
+    @MockitoBean
+    private AdminWorkerDetailQueryService workerDetailQueryService;
 
     @MockitoBean
     private SetupService setupService;

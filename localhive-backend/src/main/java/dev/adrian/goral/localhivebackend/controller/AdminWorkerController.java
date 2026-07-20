@@ -1,8 +1,10 @@
 package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.domain.Worker;
+import dev.adrian.goral.localhivebackend.dto.AdminWorkerDetailResponseDto;
 import dev.adrian.goral.localhivebackend.dto.WorkerResponseDto;
 import dev.adrian.goral.localhivebackend.service.WorkerRegistryService;
+import dev.adrian.goral.localhivebackend.service.work.AdminWorkerDetailQueryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -21,6 +23,7 @@ import java.util.UUID;
 public class AdminWorkerController {
 
     private final WorkerRegistryService workerRegistryService;
+    private final AdminWorkerDetailQueryService workerDetailQueryService;
 
     /**
      * Retrieves all workers for the Admin Dashboard.
@@ -34,6 +37,15 @@ public class AdminWorkerController {
                 .map(WorkerResponseDto::fromEntity)
                 .toList();
         return ResponseEntity.ok(dtos);
+    }
+
+    @GetMapping("/{workerId}")
+    public ResponseEntity<AdminWorkerDetailResponseDto> getWorkerDetail(@PathVariable String workerId) {
+        UUID parsedWorkerId = parseWorkerId(workerId);
+        log.info("ADMIN: Requested worker detail for: {}", parsedWorkerId);
+        return workerDetailQueryService.getWorkerDetail(parsedWorkerId)
+                .map(ResponseEntity::ok)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Worker not found."));
     }
 
     /**
@@ -58,6 +70,14 @@ public class AdminWorkerController {
         } catch (IllegalStateException e) {
             // Catches the "Worker is not pending approval" error and routes it as a 400 Bad Request
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
+
+    private static UUID parseWorkerId(String workerId) {
+        try {
+            return UUID.fromString(workerId);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "workerId must be a valid UUID.");
         }
     }
 }
