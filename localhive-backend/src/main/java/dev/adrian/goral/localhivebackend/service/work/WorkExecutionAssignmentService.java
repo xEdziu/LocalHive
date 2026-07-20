@@ -40,6 +40,34 @@ public class WorkExecutionAssignmentService {
                                                UUID workerId,
                                                ExecutionAssignmentMode assignmentMode,
                                                LocalDateTime assignedAt) {
+        return assignExecution(
+                executionId,
+                workerId,
+                assignmentMode,
+                assignedAt,
+                WorkerEligibility.APPROVED_ONLINE_AVAILABLE
+        );
+    }
+
+    @Transactional
+    public ExecutionAssignment assignExecutionToApprovedWorker(UUID executionId,
+                                                              UUID workerId,
+                                                              ExecutionAssignmentMode assignmentMode,
+                                                              LocalDateTime assignedAt) {
+        return assignExecution(
+                executionId,
+                workerId,
+                assignmentMode,
+                assignedAt,
+                WorkerEligibility.APPROVED_ONLY
+        );
+    }
+
+    private ExecutionAssignment assignExecution(UUID executionId,
+                                                UUID workerId,
+                                                ExecutionAssignmentMode assignmentMode,
+                                                LocalDateTime assignedAt,
+                                                WorkerEligibility workerEligibility) {
         ExecutionAssignmentMode validAssignmentMode = Objects.requireNonNull(
                 assignmentMode,
                 "assignmentMode must not be null."
@@ -50,7 +78,7 @@ public class WorkExecutionAssignmentService {
 
         requireQueuedExecution(execution);
         requireNoExistingAssignment(execution);
-        requireEligibleWorker(worker);
+        workerEligibility.require(worker);
         requireWorkerHasNoActiveExecution(worker);
 
         execution.markAssigned(validAssignedAt);
@@ -105,9 +133,34 @@ public class WorkExecutionAssignmentService {
         }
     }
 
+    private static void requireApprovedWorker(Worker worker) {
+        if (worker.getApprovalStatus() != WorkerApprovalStatus.APPROVED) {
+            throw new IllegalStateException(
+                    "Worker must be APPROVED to receive execution assignment."
+            );
+        }
+    }
+
     private void requireWorkerHasNoActiveExecution(Worker worker) {
         if (assignmentRepository.existsByWorkerAndExecution_StatusIn(worker, ACTIVE_EXECUTION_STATUSES)) {
             throw new IllegalStateException("Worker already has an active execution assignment.");
         }
+    }
+
+    private enum WorkerEligibility {
+        APPROVED_ONLINE_AVAILABLE {
+            @Override
+            void require(Worker worker) {
+                requireEligibleWorker(worker);
+            }
+        },
+        APPROVED_ONLY {
+            @Override
+            void require(Worker worker) {
+                requireApprovedWorker(worker);
+            }
+        };
+
+        abstract void require(Worker worker);
     }
 }

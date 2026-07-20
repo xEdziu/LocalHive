@@ -1,20 +1,26 @@
 package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
+import dev.adrian.goral.localhivebackend.dto.AdminCreateExecutionRequestDto;
+import dev.adrian.goral.localhivebackend.dto.AdminCreateExecutionResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionDetailResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionListResponseDto;
+import dev.adrian.goral.localhivebackend.service.work.AdminExecutionCreationService;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionQueryService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Locale;
+import java.util.NoSuchElementException;
 import java.util.UUID;
 
 @RestController
@@ -26,6 +32,20 @@ public class AdminExecutionController {
     private static final int DEFAULT_OFFSET = 0;
 
     private final AdminExecutionQueryService queryService;
+    private final AdminExecutionCreationService creationService;
+
+    @PostMapping
+    public ResponseEntity<AdminCreateExecutionResponseDto> createExecution(
+            @RequestBody AdminCreateExecutionRequestDto request
+    ) {
+        try {
+            return ResponseEntity.status(HttpStatus.CREATED).body(creationService.createExecution(request));
+        } catch (NoSuchElementException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
 
     @GetMapping
     public ResponseEntity<AdminExecutionListResponseDto> listExecutions(
