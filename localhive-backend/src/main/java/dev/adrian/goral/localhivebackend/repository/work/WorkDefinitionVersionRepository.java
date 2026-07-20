@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -22,6 +23,10 @@ public interface WorkDefinitionVersionRepository extends JpaRepository<WorkDefin
     int findHighestVersionNumber(@Param("definition") WorkDefinition definition);
 
     List<WorkDefinitionVersion> findByDefinitionOrderByVersionNumberAsc(WorkDefinition definition);
+
+    List<WorkDefinitionVersion> findByDefinitionOrderByVersionNumberDesc(WorkDefinition definition);
+
+    List<WorkDefinitionVersion> findByDefinition_IdIn(Collection<UUID> definitionIds);
 
     Optional<WorkDefinitionVersion> findByDefinitionAndVersionNumber(WorkDefinition definition, int versionNumber);
 }
