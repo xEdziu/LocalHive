@@ -38,8 +38,7 @@ public record AdminExecutionDetailResponseDto(
             String workerHostname,
             String mode,
             LocalDateTime assignedAt,
-            LocalDateTime claimedAt,
-            LocalDateTime leaseExpiresAt
+            LocalDateTime claimedAt
     ) {
     }
 

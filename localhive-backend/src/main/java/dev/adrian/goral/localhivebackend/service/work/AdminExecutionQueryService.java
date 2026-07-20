@@ -203,8 +203,7 @@ public class AdminExecutionQueryService {
                         assignment.getWorker().getHostname(),
                         assignment.getAssignmentMode().name(),
                         assignment.getAssignedAt(),
-                        assignment.getClaimedAt(),
-                        assignment.getLeaseExpiresAt()
+                        assignment.getClaimedAt()
                 ),
                 new AdminExecutionDetailResponseDto.TimingDto(
                         execution.getCreatedAt(),
