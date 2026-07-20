@@ -56,6 +56,30 @@ Example:
     "lastHeartbeatAt": "2026-07-20T10:00:00",
     "pauseEnabled": false
   },
+  "capabilities": {
+    "reportedAt": "2026-07-20T10:00:00",
+    "executors": [
+      {
+        "executorId": "localhive.no-op",
+        "executorContractVersion": 1,
+        "enabled": true
+      },
+      {
+        "executorId": "localhive.docker.workload",
+        "executorContractVersion": 1,
+        "enabled": true
+      }
+    ],
+    "docker": {
+      "enabled": true,
+      "allowedImages": [
+        "alpine:3.20"
+      ],
+      "maxMemoryMb": 4096,
+      "maxCpuCores": 8,
+      "gpuAllowed": false
+    }
+  },
   "currentExecution": {
     "executionId": "11111111-1111-1111-1111-111111111111",
     "displayName": "M6.1 Storage Smoke",
@@ -147,6 +171,18 @@ Worker state is split into the current persisted dimensions:
 | `pauseEnabled` | Derived from `availability == PAUSED`. |
 | `lastSeenAt` | Currently mirrors `lastHeartbeatAt` because Master does not maintain a separate last-seen source yet. |
 
+## Capabilities
+
+`capabilities` is the latest safe capability snapshot reported by the Agent heartbeat. It is `null` when the worker has never reported capabilities.
+
+The section may contain:
+
+- `reportedAt`,
+- `executors`,
+- Docker policy summary metadata.
+
+Capabilities are documented in [Agent Capabilities](agent-capabilities.md). They are observable in M12 and are not used by M11 worker selection yet.
+
 ## Current Execution
 
 `currentExecution` is the newest execution assigned to this worker in an active status:
@@ -214,6 +250,12 @@ The worker detail response does not expose:
 - `storagePath`,
 - `dataRoot`,
 - physical absolute storage path,
+- Master URL,
+- local Agent config path,
+- full Agent config JSON,
+- credential store details,
+- task history,
+- workspace or output paths,
 - artifact file contents,
 - stack traces.
 
@@ -230,7 +272,7 @@ The worker detail response does not expose:
 
 The worker detail endpoint provides only a small execution preview. Execution list/detail and artifact endpoints remain the source for deeper execution and output file inspection.
 
-See [Worker Selection](worker-selection.md) for how `APPROVED`, `ONLINE`, `AVAILABLE`, `sharedRamMb`, `cpuCores`, and active execution state affect `AUTO` and `PREFER` assignment.
+See [Worker Selection](worker-selection.md) for how `APPROVED`, `ONLINE`, `AVAILABLE`, `sharedRamMb`, `cpuCores`, and active execution state affect `AUTO` and `PREFER` assignment. M12 [Agent Capabilities](agent-capabilities.md) are currently displayed metadata only.
 
 ## Current Limitations
 

@@ -15,12 +15,14 @@ localhive-backend/src/main/resources/db/migration/V7__add_execution_assignment_l
 localhive-backend/src/main/resources/db/migration/V8__add_artifacts.sql
 localhive-backend/src/main/resources/db/migration/V9__add_execution_artifacts.sql
 localhive-backend/src/main/resources/db/migration/V10__add_execution_display_name_snapshot.sql
+localhive-backend/src/main/resources/db/migration/V11__add_worker_capabilities.sql
 ```
 
 The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. V3 adds Work Definition identity and immutable version persistence. V4 adds Work Instance persistence, configuration overrides, and relational resource defaults/overrides. V5 adds Work Execution lifecycle persistence with resolved configuration and resource snapshots. V6 adds one Master-side execution assignment per execution and one concrete execution attempt once an assigned execution starts running. Metrics, scheduler queues, and compute-grid runtime tables are intentionally excluded until those domains are designed and implemented.
 V7 adds worker claim lease fields directly to `execution_assignments`. The raw lease token is never stored; only `lease_token_hash` is persisted. V7 does not add a scheduler, polling table, or separate lease table.
 V8 adds generic artifact metadata for workspace packages. V9 adds execution output artifact persistence and links each `EXECUTION_OUTPUT` artifact to the `WorkExecution` and uploading worker. Metrics, scheduler queues, compute-grid runtime tables, output retention policy, and large artifact storage are intentionally excluded until those domains are designed and implemented.
 V10 adds `work_executions.display_name_snapshot` for stable human-readable execution display. It is a required, nonblank `VARCHAR(255)` value and is documented in [Execution Display Metadata](execution-display-metadata.md).
+V11 adds `worker_capabilities`, a latest-snapshot table for safe Agent capability metadata reported through worker heartbeat. It does not add capability history, scheduler behavior, Docker policy synchronization, or capability-aware worker selection.
 
 ## Integration Tests
 
@@ -46,6 +48,7 @@ No manually running LocalHive PostgreSQL instance is required for tests. Testcon
 | `execution_attempts` | Concrete runtime attempt for an assigned execution; currently limited to attempt number `1`. |
 | `artifacts` | Generic artifact metadata and internal storage path for workspace packages and execution outputs. |
 | `execution_artifacts` | Links `EXECUTION_OUTPUT` artifacts to one work execution and the worker that uploaded them. |
+| `worker_capabilities` | Latest safe capability snapshot reported by one worker. |
 
 ## Entity Relationship Diagram
 
@@ -189,6 +192,17 @@ erDiagram
         timestamp created_at
     }
 
+    WORKER_CAPABILITIES {
+        UUID worker_id PK
+        timestamp reported_at
+        jsonb executors
+        boolean docker_enabled
+        jsonb docker_allowed_images
+        int docker_max_memory_mb
+        int docker_max_cpu_cores
+        boolean docker_gpu_allowed
+    }
+
     GAME_TEMPLATES {
         UUID id PK
         int default_port
@@ -234,6 +248,7 @@ erDiagram
     EXECUTION_ASSIGNMENTS ||--o| EXECUTION_ATTEMPTS : produces
     WORKERS ||--o{ EXECUTION_ASSIGNMENTS : receives
     WORKERS ||--o{ EXECUTION_ARTIFACTS : uploads
+    WORKERS ||--o| WORKER_CAPABILITIES : reports
     ARTIFACTS ||--o| EXECUTION_ARTIFACTS : linked
     USERS ||--o{ WORK_DEFINITION_VERSIONS : created
     USERS ||--o{ WORK_DEFINITION_VERSIONS : reviewed
@@ -257,6 +272,7 @@ erDiagram
 | `execution_attempts` | Primary key on `id`; unique `execution_id`; unique `(execution_id, attempt_number)`; foreign keys to `work_executions(id)` and `execution_assignments(id)`; check that `attempt_number = 1`; checks for attempt statuses and terminal timestamp/failure-field consistency. |
 | `artifacts` | Primary key on `id`; enum check for `WORKSPACE_PACKAGE` and `EXECUTION_OUTPUT`; checks for non-blank original filename and storage path, nullable non-blank content type, non-negative size, and 64-character SHA-256. |
 | `execution_artifacts` | Primary key on `id`; unique `artifact_id`; foreign keys to `work_executions(id)`, `artifacts(id)`, and `workers(id)`; check for non-blank relative path. |
+| `worker_capabilities` | Primary key on `worker_id`; foreign key to `workers(id)` with cascade delete; required `reported_at`; required JSONB executor array with bounded size; optional JSONB Docker allowed image array with bounded size; non-negative nullable Docker memory and CPU limits. |
 
 ## Worker State
 
@@ -322,3 +338,11 @@ V6 does not introduce leases, claim tokens, scheduler ownership, REST polling, A
 V8 adds generic artifact metadata in `artifacts`. V9 adds `execution_artifacts`, which links each `EXECUTION_OUTPUT` artifact to one `work_executions.id` and the worker that uploaded it. Output artifacts are documented in [Output Artifacts](output-artifacts.md).
 
 The internal `storage_path` column is not exposed by worker or admin DTOs. For execution outputs, Master stores content under a Master-generated path such as `.localhive-master/artifacts/<artifactId>/artifact`; the uploaded `relative_path` and original filename remain metadata only.
+
+## Worker Capabilities
+
+V11 adds `worker_capabilities` for the latest Agent capability report. The table stores one row per worker, keyed by `worker_id`, and deletes the row when the worker is deleted.
+
+Executor capabilities and Docker allowed images are stored as PostgreSQL `JSONB`. Docker enabled state, max memory, max CPU, and GPU policy summary are stored as scalar columns. The table stores safe metadata only; it does not store API keys, Master URLs, local Agent config paths, full Agent config JSON, task history, workspace/output paths, lease tokens, `storagePath`, `dataRoot`, or physical paths.
+
+See [Agent Capabilities](agent-capabilities.md) for the heartbeat contract and Admin Worker Detail response.

@@ -109,6 +109,7 @@ Notes:
 - `sharedRamMb == null` or `sharedRamMb == 0` does not fit Docker,
 - CPU must be sufficient,
 - GPU remains unsupported,
+- M12 capability snapshots are not used for worker selection yet,
 - Master does not sync the Agent local Docker policy in M11,
 - Agent remains final enforcement for local Docker policy.
 
@@ -271,6 +272,7 @@ The Work Definition API helps choose a definition/version. The Admin Worker API 
 - no workload lifecycle support,
 - no GPU support,
 - no Agent policy sync,
+- no worker selection based on M12 capability snapshots,
 - no historical performance scoring,
 - no frontend UI yet.
 
@@ -281,7 +283,7 @@ Future work may add:
 - real scheduler loop,
 - queueing without immediate assignment,
 - `AUTO` and `PREFER` with a resource-aware queue,
-- worker capability or policy reporting from Agent,
+- worker capability or policy driven selection using [Agent Capabilities](agent-capabilities.md),
 - GPU-aware selection,
 - load, history, or performance-based scoring,
 - cancellation, retry, and requeue,
