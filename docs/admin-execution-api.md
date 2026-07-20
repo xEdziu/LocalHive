@@ -12,7 +12,7 @@ The read side of the Admin Execution API provides:
 
 The list and detail endpoints documented here do not mutate execution state.
 
-Executions can now be created from approved Work Definition Versions through the M10 [Admin Create Execution API](admin-create-execution-api.md). M9 adds a read-only [Admin Work Definition API](admin-work-definition-api.md) for browsing definitions and versions before creating an execution.
+Executions can now be created from approved Work Definition Versions through the [Admin Create Execution API](admin-create-execution-api.md). M11 [Worker Selection](worker-selection.md) documents how `REQUIRE`, `AUTO`, and `PREFER` choose the assigned worker. M9 adds a read-only [Admin Work Definition API](admin-work-definition-api.md) for browsing definitions and versions before creating an execution.
 
 ## List Executions
 
@@ -157,7 +157,7 @@ The detail response intentionally does not include `leaseExpiresAt`. It is techn
 
 The execution list and detail endpoints expose only `outputArtifactCount`.
 
-Execution creation is documented separately in [Admin Create Execution API](admin-create-execution-api.md). The create response is also a safe summary and does not expose raw configuration, lease fields, or storage paths.
+Execution creation is documented separately in [Admin Create Execution API](admin-create-execution-api.md). The assigned worker can come from `REQUIRE`, `AUTO`, or `PREFER`; selection details are documented in [Worker Selection](worker-selection.md). The create response is also a safe summary and does not expose raw configuration, lease fields, or storage paths.
 
 Existing artifact endpoints provide the output artifact metadata and download flow:
 

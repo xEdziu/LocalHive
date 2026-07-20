@@ -179,7 +179,7 @@ Use the [Admin Execution API](admin-execution-api.md) for the full worker execut
 GET /api/admin/executions?workerId={workerId}&limit=50&offset=0
 ```
 
-Use the [Admin Create Execution API](admin-create-execution-api.md) when an admin client needs to create a one-off execution for a selected approved worker.
+Use the [Admin Create Execution API](admin-create-execution-api.md) when an admin client needs to create a one-off execution. M11 [Worker Selection](worker-selection.md) uses the worker status and resource fields from this API for `AUTO` and `PREFER` assignment modes.
 
 ## Artifact Count
 
@@ -223,12 +223,14 @@ The worker detail response does not expose:
 | --- | --- |
 | `GET /api/admin/workers` | Worker overview list. |
 | `GET /api/admin/workers/{workerId}` | One worker detail card or page. |
-| `POST /api/admin/executions` | Create a one-off execution for an approved target worker. |
+| `POST /api/admin/executions` | Create a one-off execution and assign it with `REQUIRE`, `AUTO`, or `PREFER`. |
 | `GET /api/admin/executions?workerId={workerId}&limit=50&offset=0` | Full execution history for one worker. |
 | `GET /api/admin/executions/{executionId}` | One execution detail page. |
 | `GET /api/admin/executions/{executionId}/artifacts` | Output artifact metadata for one execution. |
 
 The worker detail endpoint provides only a small execution preview. Execution list/detail and artifact endpoints remain the source for deeper execution and output file inspection.
+
+See [Worker Selection](worker-selection.md) for how `APPROVED`, `ONLINE`, `AVAILABLE`, `sharedRamMb`, `cpuCores`, and active execution state affect `AUTO` and `PREFER` assignment.
 
 ## Current Limitations
 

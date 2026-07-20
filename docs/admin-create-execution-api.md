@@ -1,8 +1,8 @@
 # Admin Create Execution API
 
-M10 adds a production admin endpoint for creating one-off executions without using dev-smoke endpoints.
+M10 added a production admin endpoint for creating one-off executions without using dev-smoke endpoints. M11 extends that endpoint with worker selection modes.
 
-Before M10, real smoke executions were created through dev-only smoke helpers. M9 added read-only admin visibility into Work Definitions and their versions. M10 completes the first production admin path: an admin can select an approved Work Definition Version, select a worker, create a `WorkExecution`, and create an explicit `ExecutionAssignment`.
+Before M10, real smoke executions were created through dev-only smoke helpers. M9 added read-only admin visibility into Work Definitions and their versions. M10 completed the first production admin path: an admin can select an approved Work Definition Version, create a `WorkExecution`, and create an `ExecutionAssignment`. M11 adds `REQUIRE`, `AUTO`, and `PREFER` assignment modes for choosing the worker during that create request.
 
 The Agent does not receive work through this admin endpoint directly. It continues to claim assigned executions through the existing worker claim API. Dev-smoke endpoints still exist for local testing, but they are not the target path for a future Master frontend.
 
@@ -22,13 +22,13 @@ Security:
 Behavior:
 
 - creates a one-off `WorkExecution`,
-- creates an explicit `ExecutionAssignment`,
-- supports `REQUIRE` assignment only in M10,
+- creates one `ExecutionAssignment`,
+- supports `REQUIRE`, `AUTO`, and `PREFER` assignment modes,
 - returns `201 Created`,
 - created execution starts as `ASSIGNED`,
 - Agent can claim it through the existing worker claim API,
-- no scheduler,
-- no `AUTO` or `PREFER` worker selection,
+- worker selection happens only during this request,
+- no background scheduler,
 - no retry, requeue, or cancel endpoint,
 - no multi-worker execution.
 
@@ -66,18 +66,22 @@ Fields:
 | Field | Required | Description |
 | --- | --- | --- |
 | `workDefinitionVersionId` | yes | UUID of the Work Definition Version to execute. |
-| `workerId` | yes | UUID of the worker that should receive the explicit assignment. |
-| `assignmentMode` | no | Defaults to `REQUIRE`. Only `REQUIRE` is supported in M10. |
+| `workerId` | mode-dependent | UUID of the explicit or preferred worker. Required for `REQUIRE` and `PREFER`; absent for `AUTO`. |
+| `assignmentMode` | no | Defaults to `REQUIRE`. Supported values are `REQUIRE`, `AUTO`, and `PREFER`. |
 | `displayName` | no | Optional human-readable name for the execution snapshot. |
 | `configuration` | executor-dependent | JSON object validated by the selected executor rules. |
 
 Rules:
 
-- `AUTO` and `PREFER` return `400`.
+- `AUTO` with `workerId` returns `400`.
+- `PREFER` without `workerId` returns `400`.
+- `AUTO` or `PREFER` without an eligible worker returns `409`.
 - Blank or null `displayName` uses fallback naming.
 - `displayName` is limited to 255 characters.
 - `configuration` is validated per executor.
 - The full raw configuration is not returned in the create response.
+
+See [Worker Selection](worker-selection.md) for assignment mode eligibility, resource fit, and deterministic scoring.
 
 ## Response Shape
 
@@ -126,21 +130,27 @@ This endpoint does not create, update, delete, import, enable, disable, or sched
 
 ## Worker Validation
 
-`workerId` must reference an existing worker.
+Worker validation depends on `assignmentMode`.
 
-The worker must be `APPROVED`. The worker does not need to be `ONLINE` or `AVAILABLE` at creation time. Assigning to an offline or paused approved worker creates the assignment, and the existing worker claim rules decide when the Agent can claim it.
+For `REQUIRE`, `workerId` must reference an existing `APPROVED` worker. The worker does not need to be `ONLINE` or `AVAILABLE` at creation time. Assigning to an offline or paused approved worker creates the assignment, and the existing worker claim rules decide when the Agent can claim it.
+
+For `AUTO` and `PREFER`, Master applies worker selection eligibility and resource fit rules. See [Worker Selection](worker-selection.md).
 
 The endpoint does not mutate worker state and does not create, return, rotate, or regenerate API keys.
 
 ## Assignment Behavior
 
-M10 creates an explicit assignment with mode `REQUIRE`.
+The endpoint creates one assignment using the requested mode:
 
-There is no worker selection in this endpoint. `AUTO` and `PREFER` are future scheduler modes and are rejected in M10.
+- `REQUIRE` assigns to the explicitly selected approved worker.
+- `AUTO` selects one currently eligible worker.
+- `PREFER` tries the preferred worker first and falls back to `AUTO` when the preferred worker is ineligible.
 
-M10 does not add:
+The response contains the actual selected worker in `assignment.workerId`. For `PREFER`, `assignment.mode` remains `PREFER` even when Master selected a fallback worker.
 
-- scheduler behavior,
+M11 does not add:
+
+- background scheduler behavior,
 - multi-worker parent or child executions,
 - cancellation,
 - retry,
@@ -280,13 +290,13 @@ The submitted configuration is stored internally for execution claim where neede
 | `GET /api/admin/workers/{workerId}` | Inspect the target worker and recent execution activity. |
 | `GET /api/admin/executions/{executionId}/artifacts` | List output artifact metadata for one execution. |
 
-The Work Definition API helps an admin client select a definition and version. The Admin Worker API helps select or inspect the target worker. This API creates the execution. The Admin Execution API monitors it. Artifact endpoints list and download output after the Agent uploads it.
+The Work Definition API helps an admin client select a definition and version. The Admin Worker API helps select or inspect target workers and the resource fields used by `AUTO` and `PREFER`. This API creates the execution. [Worker Selection](worker-selection.md) explains assignment mode behavior. The Admin Execution API monitors the result. Artifact endpoints list and download output after the Agent uploads it.
 
 ## Manual Smoke Flow
 
 1. Log in as an admin and capture the JWT.
 2. List work definitions and capture `latestVersionId`.
-3. Pick an approved worker.
+3. Pick an approved worker for `REQUIRE`, or use `AUTO`/`PREFER` worker selection.
 4. Create the execution with `POST /api/admin/executions`.
 5. Poll `GET /api/admin/executions/{executionId}`.
 6. Read output artifact metadata and download artifacts with the existing artifact API.
@@ -326,10 +336,9 @@ Authorization: Bearer {{auth_token}}
 ## Current Limitations
 
 - Work Definition management remains read-only.
-- Explicit worker assignment only.
-- Only `REQUIRE` is supported.
-- No `AUTO` or `PREFER`.
-- No scheduler.
+- Worker selection runs only during `POST /api/admin/executions`.
+- No background scheduler.
+- No periodic assignment process.
 - No multi-worker or distributed execution.
 - No Workload lifecycle support.
 - Only `TASK` creation.
@@ -344,9 +353,9 @@ Authorization: Bearer {{auth_token}}
 
 Future work may add:
 
-- M11 scheduler and worker selection foundation,
-- `AUTO` and `PREFER` assignment modes,
-- resource-aware worker selection,
+- real scheduler loop,
+- queueing without immediate assignment,
+- richer worker capability and policy reporting,
 - Workload lifecycle creation,
 - cancellation, retry, and requeue after explicit design,
 - YAML or template-based create flow,
