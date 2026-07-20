@@ -123,13 +123,27 @@ public class StoragePathValidationService {
     }
 
     private static void createDirectories(StorageLayout layout) {
-        try {
-            for (Path directory : layout.requiredDirectories()) {
+        for (Path directory : layout.requiredDirectories()) {
+            try {
                 Files.createDirectories(directory);
+            } catch (IOException | SecurityException e) {
+                if (hasUnwritableExistingDirectoryInPath(directory)) {
+                    throw new IllegalArgumentException("dataRoot directories must be writable.", e);
+                }
+                throw new IllegalArgumentException("dataRoot directories cannot be created.", e);
             }
-        } catch (IOException | SecurityException e) {
-            throw new IllegalArgumentException("dataRoot directories cannot be created.", e);
         }
+    }
+
+    private static boolean hasUnwritableExistingDirectoryInPath(Path path) {
+        Path current = path;
+        while (current != null && !Files.exists(current, NOFOLLOW_LINKS)) {
+            current = current.getParent();
+        }
+
+        return current != null
+                && Files.isDirectory(current, NOFOLLOW_LINKS)
+                && !Files.isWritable(current);
     }
 
     private static void verifyWritable(StorageLayout layout) {
