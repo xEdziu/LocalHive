@@ -222,6 +222,12 @@ The `status` filter is an exact enum value, such as `SUCCEEDED`, `FAILED`, or `R
 
 The `workerId` filter is a UUID. Filters affect both `items` and `totalCount`.
 
+The [Admin Worker API](admin-worker-api.md) exposes a `recentExecutions` preview with at most 5 newest executions for one worker. Use this endpoint with the `workerId` filter when an admin client needs the full paginated history for that worker:
+
+```http
+GET /api/admin/executions?workerId={workerId}&limit=50&offset=0
+```
+
 ## Duration
 
 `durationMs` is calculated from `startedAt` and `completedAt`. If either timestamp is missing, `durationMs` may be `null`. Master does not invent a fake duration for incomplete or partially recorded executions.
