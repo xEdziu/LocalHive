@@ -1,18 +1,18 @@
 # Admin Execution API
 
-M7 adds read-only production admin endpoints for browsing Work Executions.
+M7 adds production admin endpoints for browsing Work Executions.
 
 Dev-smoke endpoints create local test executions, and the worker API handles claim, lease, running, terminal report, and artifact upload flows. Those APIs are intentionally operational. A future Master frontend and current admin tooling need a separate read-only surface for inspecting execution history without using worker protocol endpoints or exposing runtime secrets.
 
-The Admin Execution API provides:
+The read side of the Admin Execution API provides:
 
 - a paginated execution list,
 - an execution detail view,
 - links to the existing output artifact metadata and download endpoints.
 
-It does not mutate execution state.
+The list and detail endpoints documented here do not mutate execution state.
 
-Executions are created from Work Definitions in the future production flow. M9 adds a read-only [Admin Work Definition API](admin-work-definition-api.md) for browsing definitions and versions; M10 is expected to add a separate admin execution creation API.
+Executions can now be created from approved Work Definition Versions through the M10 [Admin Create Execution API](admin-create-execution-api.md). M9 adds a read-only [Admin Work Definition API](admin-work-definition-api.md) for browsing definitions and versions before creating an execution.
 
 ## List Executions
 
@@ -157,6 +157,8 @@ The detail response intentionally does not include `leaseExpiresAt`. It is techn
 
 The execution list and detail endpoints expose only `outputArtifactCount`.
 
+Execution creation is documented separately in [Admin Create Execution API](admin-create-execution-api.md). The create response is also a safe summary and does not expose raw configuration, lease fields, or storage paths.
+
 Existing artifact endpoints provide the output artifact metadata and download flow:
 
 ```http
@@ -236,7 +238,7 @@ GET /api/admin/executions?workerId={workerId}&limit=50&offset=0
 
 ## Current Limitations
 
-- read-only only,
+- list and detail endpoints are read-only,
 - no cancel, retry, or requeue endpoints,
 - no date-range filtering,
 - no text search,

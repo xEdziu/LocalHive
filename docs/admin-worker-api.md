@@ -179,6 +179,8 @@ Use the [Admin Execution API](admin-execution-api.md) for the full worker execut
 GET /api/admin/executions?workerId={workerId}&limit=50&offset=0
 ```
 
+Use the [Admin Create Execution API](admin-create-execution-api.md) when an admin client needs to create a one-off execution for a selected approved worker.
+
 ## Artifact Count
 
 `outputArtifactCount` is a database-based count of `EXECUTION_OUTPUT` artifacts linked to the execution.
@@ -221,6 +223,7 @@ The worker detail response does not expose:
 | --- | --- |
 | `GET /api/admin/workers` | Worker overview list. |
 | `GET /api/admin/workers/{workerId}` | One worker detail card or page. |
+| `POST /api/admin/executions` | Create a one-off execution for an approved target worker. |
 | `GET /api/admin/executions?workerId={workerId}&limit=50&offset=0` | Full execution history for one worker. |
 | `GET /api/admin/executions/{executionId}` | One execution detail page. |
 | `GET /api/admin/executions/{executionId}/artifacts` | Output artifact metadata for one execution. |

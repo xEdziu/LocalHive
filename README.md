@@ -4,6 +4,7 @@ LocalHive Master is the central service for LocalHive worker registration, work 
 
 ## Documentation
 
+- [Admin create execution API](docs/admin-create-execution-api.md)
 - [Admin execution API](docs/admin-execution-api.md)
 - [Admin work definition API](docs/admin-work-definition-api.md)
 - [Admin worker API](docs/admin-worker-api.md)

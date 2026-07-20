@@ -2,9 +2,9 @@
 
 M9 adds read-only production admin endpoints for browsing Work Definitions and their immutable versions.
 
-Dev-smoke endpoints can create local test executions. The [Admin Execution API](admin-execution-api.md) can inspect execution history, and the [Admin Worker API](admin-worker-api.md) can inspect one worker and its recent execution activity. A future Master frontend also needs to browse available Work Definitions and versions before a later execution creation flow exists.
+Dev-smoke endpoints can create local test executions. The [Admin Execution API](admin-execution-api.md) can inspect execution history, the [Admin Worker API](admin-worker-api.md) can inspect one worker and its recent execution activity, and the M10 [Admin Create Execution API](admin-create-execution-api.md) can create a one-off execution from an approved Work Definition Version.
 
-The Admin Work Definition API provides that read-only browsing surface before the future M10 admin execution creation endpoint. It does not create, update, delete, enable, disable, schedule, or execute work.
+The Admin Work Definition API provides the read-only browsing surface used before execution creation. It does not create, update, delete, enable, disable, schedule, or execute work.
 
 ## List Work Definitions
 
@@ -49,7 +49,7 @@ Response shape:
     {
       "definitionId": "00000000-0000-0000-0000-000000000000",
       "logicalId": "localhive.docker.workload",
-      "type": "WORKLOAD",
+      "type": "TASK",
       "sourceType": "LOCAL",
       "name": "Docker Workload",
       "description": "Run an allowed local Docker workload.",
@@ -114,7 +114,7 @@ Response shape:
 {
   "definitionId": "00000000-0000-0000-0000-000000000000",
   "logicalId": "localhive.docker.workload",
-  "type": "WORKLOAD",
+  "type": "TASK",
   "sourceType": "LOCAL",
   "name": "Docker Workload",
   "description": "Run an allowed local Docker workload.",
@@ -160,7 +160,7 @@ M9 intentionally exposes only safe metadata needed for browsing and selecting de
 - stack traces,
 - internal exception details.
 
-Execution creation is not implemented in M9.
+Execution creation is implemented separately by the M10 [Admin Create Execution API](admin-create-execution-api.md).
 
 ## Pagination
 
@@ -182,15 +182,15 @@ Filters affect both `items` and `totalCount`.
 
 ## Relation To Execution Creation
 
-M9 is read-only. It lets a future frontend list definitions, inspect their versions, and select a definition/version for a later execution creation flow.
+M9 is read-only. It lets a frontend or admin tool list definitions, inspect their versions, and select a definition/version for execution creation.
 
-M10 is expected to add a separate admin execution creation API. M9 does not create executions and does not create, update, delete, enable, disable, schedule, or execute Work Definitions.
+M10 adds a separate [Admin Create Execution API](admin-create-execution-api.md). This Work Definition API still does not create executions and does not create, update, delete, enable, disable, schedule, or execute Work Definitions.
 
 ## Current Limitations
 
 - read-only only,
 - no create, update, or delete Work Definition API,
-- no execution creation endpoint,
+- no execution creation through this Work Definition API,
 - no YAML import,
 - no safe config schema DTO yet,
 - no frontend UI yet,
@@ -203,7 +203,6 @@ M10 is expected to add a separate admin execution creation API. M9 does not crea
 
 Future work may add:
 
-- M10 Admin Create Execution API,
 - Work Definition create, update, or import after explicit design,
 - YAML or template import,
 - safe parameter schema DTO,
