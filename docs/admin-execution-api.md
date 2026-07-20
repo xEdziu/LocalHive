@@ -12,6 +12,8 @@ The Admin Execution API provides:
 
 It does not mutate execution state.
 
+Executions are created from Work Definitions in the future production flow. M9 adds a read-only [Admin Work Definition API](admin-work-definition-api.md) for browsing definitions and versions; M10 is expected to add a separate admin execution creation API.
+
 ## List Executions
 
 ```http
