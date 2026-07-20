@@ -31,6 +31,12 @@ public interface ExecutionAssignmentRepository extends JpaRepository<ExecutionAs
     @EntityGraph(attributePaths = {"execution", "worker"})
     Optional<ExecutionAssignment> findByExecution_IdAndWorker_Id(UUID executionId, UUID workerId);
 
+    @EntityGraph(attributePaths = {"execution", "worker"})
+    Optional<ExecutionAssignment> findByExecution_Id(UUID executionId);
+
+    @EntityGraph(attributePaths = {"execution", "worker"})
+    List<ExecutionAssignment> findByExecution_IdIn(Collection<UUID> executionIds);
+
     @EntityGraph(attributePaths = {"execution"})
     List<ExecutionAssignment> findByExecution_StatusAndLeaseExpiresAtLessThanEqual(
             WorkExecutionStatus status,

@@ -4,8 +4,11 @@ import dev.adrian.goral.localhivebackend.domain.artifact.ArtifactKind;
 import dev.adrian.goral.localhivebackend.domain.artifact.ExecutionArtifact;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -18,4 +21,25 @@ public interface ExecutionArtifactRepository extends JpaRepository<ExecutionArti
 
     @EntityGraph(attributePaths = {"artifact", "execution", "uploadedByWorker"})
     Optional<ExecutionArtifact> findByArtifact_Id(UUID artifactId);
+
+    long countByExecution_IdAndArtifact_Kind(UUID executionId, ArtifactKind kind);
+
+    @Query("""
+            SELECT executionArtifact.execution.id AS executionId,
+                   COUNT(executionArtifact) AS artifactCount
+            FROM ExecutionArtifact executionArtifact
+            WHERE executionArtifact.execution.id IN :executionIds
+              AND executionArtifact.artifact.kind = :kind
+            GROUP BY executionArtifact.execution.id
+            """)
+    List<ExecutionArtifactCountProjection> countByExecutionIdsAndArtifactKind(
+            @Param("executionIds") Collection<UUID> executionIds,
+            @Param("kind") ArtifactKind kind
+    );
+
+    interface ExecutionArtifactCountProjection {
+        UUID getExecutionId();
+
+        Long getArtifactCount();
+    }
 }
