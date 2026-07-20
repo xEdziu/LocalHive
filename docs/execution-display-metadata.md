@@ -78,6 +78,10 @@ Example response shape:
 
 Existing claim and lease semantics are unchanged. Master still returns the raw lease token only in the claim response and stores only its hash.
 
+## Admin Execution API
+
+The read-only [Admin Execution API](admin-execution-api.md) exposes `displayName` in both execution list and detail responses. This lets future Master admin UI surfaces show the human-readable snapshot while keeping technical executor fields available for inspection.
+
 ## Database
 
 Flyway V10 introduces `work_executions.display_name_snapshot` as `VARCHAR(255)`. The column is required and constrained to be nonblank after trimming. Existing rows are backfilled from the related Work Instance display name, Work Definition Version name, Work Definition logical identifier, or `Work execution` when no better source is available.
@@ -123,6 +127,5 @@ Possible future extensions include:
 - using `displayNameSnapshot` in Master execution tables,
 - using display names in an Agent UI redesign,
 - adding workload or instance naming flows,
-- exposing `displayNameSnapshot` in admin execution detail APIs when needed,
 - improving names for Minecraft and Fabric tasks after those workloads are implemented,
 - adding research or benchmark run names after those domains are designed.

@@ -55,6 +55,8 @@ GET /api/admin/executions/{executionId}/artifacts
 
 This endpoint requires an Admin JWT. It returns output artifacts for the execution and does not expose the internal `storagePath`.
 
+The read-only [Admin Execution API](admin-execution-api.md) exposes `outputArtifactCount` on execution list and detail responses. Use this artifact endpoint when the admin client needs per-file metadata.
+
 Example response:
 
 ```json
