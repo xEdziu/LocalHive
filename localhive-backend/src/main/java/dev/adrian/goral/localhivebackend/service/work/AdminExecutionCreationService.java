@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.adrian.goral.localhivebackend.domain.Worker;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
 import dev.adrian.goral.localhivebackend.domain.work.ExecutionAssignment;
+import dev.adrian.goral.localhivebackend.domain.work.ResourceRequest;
 import dev.adrian.goral.localhivebackend.domain.work.ResourceRequestOverrides;
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinitionVersion;
 import dev.adrian.goral.localhivebackend.domain.work.enums.DefinitionApprovalStatus;
@@ -38,6 +39,7 @@ public class AdminExecutionCreationService {
     private final WorkerRepository workerRepository;
     private final WorkExecutionCreationService creationService;
     private final WorkExecutionAssignmentService assignmentService;
+    private final WorkerSelectionService workerSelectionService;
     private final DockerWorkloadConfigurationValidator dockerWorkloadConfigurationValidator;
 
     @Transactional
@@ -50,28 +52,21 @@ public class AdminExecutionCreationService {
                 validRequest.workDefinitionVersionId(),
                 "workDefinitionVersionId"
         );
-        UUID workerId = requireUuid(validRequest.workerId(), "workerId");
         ExecutionAssignmentMode assignmentMode = resolveAssignmentMode(validRequest.assignmentMode());
+        UUID requestedWorkerId = resolveRequestedWorkerId(validRequest.workerId(), assignmentMode);
 
         WorkDefinitionVersion definitionVersion = findDefinitionVersion(definitionVersionId);
         requireExecutableDefinitionVersion(definitionVersion);
 
-        Worker worker = findWorker(workerId);
-        requireApprovedWorker(worker);
-
         ExecutionConfiguration executionConfiguration = resolveConfiguration(definitionVersion, validRequest);
+        Worker worker = selectWorker(assignmentMode, requestedWorkerId, executionConfiguration.requestedResources());
         var execution = creationService.createOneOffExecution(new CreateOneOffExecutionCommand(
                 definitionVersion.getId(),
                 executionConfiguration.configurationOverrides(),
                 executionConfiguration.resourceOverrides(),
                 validRequest.displayName()
         ));
-        ExecutionAssignment assignment = assignmentService.assignExecutionToApprovedWorker(
-                execution.getId(),
-                worker.getId(),
-                assignmentMode,
-                LocalDateTime.now()
-        );
+        ExecutionAssignment assignment = assignExecution(execution.getId(), worker.getId(), assignmentMode);
         return AdminCreateExecutionResponseDto.from(assignment);
     }
 
@@ -95,7 +90,7 @@ public class AdminExecutionCreationService {
             );
         }
         if (definitionVersion.getDefinition().getWorkType() != WorkType.TASK) {
-            throw new IllegalArgumentException("M10 supports execution creation for TASK work definitions only.");
+            throw new IllegalArgumentException("Admin execution creation supports TASK work definitions only.");
         }
         if (!NO_OP_EXECUTOR_ID.equals(definitionVersion.getExecutorId())
                 && !DOCKER_EXECUTOR_ID.equals(definitionVersion.getExecutorId())) {
@@ -110,6 +105,40 @@ public class AdminExecutionCreationService {
                     "Worker must be APPROVED to receive admin execution assignment."
             );
         }
+    }
+
+    private Worker selectWorker(ExecutionAssignmentMode assignmentMode,
+                                UUID requestedWorkerId,
+                                ResourceRequest requestedResources) {
+        return switch (assignmentMode) {
+            case REQUIRE -> {
+                Worker worker = findWorker(requestedWorkerId);
+                requireApprovedWorker(worker);
+                yield worker;
+            }
+            case AUTO -> workerSelectionService.selectAuto(requestedResources);
+            case PREFER -> workerSelectionService.selectPreferred(requestedWorkerId, requestedResources);
+        };
+    }
+
+    private ExecutionAssignment assignExecution(UUID executionId,
+                                                UUID workerId,
+                                                ExecutionAssignmentMode assignmentMode) {
+        if (assignmentMode == ExecutionAssignmentMode.REQUIRE) {
+            return assignmentService.assignExecutionToApprovedWorker(
+                    executionId,
+                    workerId,
+                    assignmentMode,
+                    LocalDateTime.now()
+            );
+        }
+
+        return assignmentService.assignExecution(
+                executionId,
+                workerId,
+                assignmentMode,
+                LocalDateTime.now()
+        );
     }
 
     private ExecutionConfiguration resolveConfiguration(WorkDefinitionVersion definitionVersion,
@@ -129,6 +158,11 @@ public class AdminExecutionCreationService {
                             dockerConfiguration.memoryMb(),
                             dockerConfiguration.cpuCores(),
                             false
+                    ),
+                    ResourceRequest.of(
+                            dockerConfiguration.memoryMb(),
+                            dockerConfiguration.cpuCores(),
+                            false
                     )
             );
         }
@@ -140,7 +174,7 @@ public class AdminExecutionCreationService {
     private static ExecutionConfiguration noOpConfiguration(Map<String, Object> configuration) {
         ObjectNode sanitized = JsonNodeFactory.instance.objectNode();
         if (configuration == null) {
-            return new ExecutionConfiguration(sanitized, ResourceRequestOverrides.empty());
+            return new ExecutionConfiguration(sanitized, ResourceRequestOverrides.empty(), ResourceRequest.zero());
         }
 
         for (String fieldName : configuration.keySet()) {
@@ -159,7 +193,7 @@ public class AdminExecutionCreationService {
             sanitized.put("message", textMessage);
         }
 
-        return new ExecutionConfiguration(sanitized, ResourceRequestOverrides.empty());
+        return new ExecutionConfiguration(sanitized, ResourceRequestOverrides.empty(), ResourceRequest.zero());
     }
 
     private static ObjectNode requireConfigurationObject(Map<String, Object> configuration, String message) {
@@ -225,6 +259,19 @@ public class AdminExecutionCreationService {
         return value;
     }
 
+    private static UUID resolveRequestedWorkerId(UUID workerId, ExecutionAssignmentMode assignmentMode) {
+        return switch (assignmentMode) {
+            case REQUIRE -> requireUuid(workerId, "workerId");
+            case AUTO -> {
+                if (workerId != null) {
+                    throw new IllegalArgumentException("workerId must be absent for AUTO assignmentMode.");
+                }
+                yield null;
+            }
+            case PREFER -> requireUuid(workerId, "workerId");
+        };
+    }
+
     private static ExecutionAssignmentMode resolveAssignmentMode(String rawAssignmentMode) {
         if (rawAssignmentMode == null) {
             return ExecutionAssignmentMode.REQUIRE;
@@ -240,16 +287,13 @@ public class AdminExecutionCreationService {
             throw new IllegalArgumentException("Unknown assignmentMode: " + rawAssignmentMode.trim());
         }
 
-        if (assignmentMode != ExecutionAssignmentMode.REQUIRE) {
-            throw new IllegalArgumentException("M10 supports only REQUIRE assignmentMode.");
-        }
-
         return assignmentMode;
     }
 
     private record ExecutionConfiguration(
             JsonNode configurationOverrides,
-            ResourceRequestOverrides resourceOverrides
+            ResourceRequestOverrides resourceOverrides,
+            ResourceRequest requestedResources
     ) {
     }
 }

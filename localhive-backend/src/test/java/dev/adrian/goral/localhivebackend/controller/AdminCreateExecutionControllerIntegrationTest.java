@@ -12,6 +12,7 @@ import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
 import dev.adrian.goral.localhivebackend.domain.work.ResourceRequest;
+import dev.adrian.goral.localhivebackend.domain.work.ResourceRequestOverrides;
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinitionVersion;
 import dev.adrian.goral.localhivebackend.domain.work.WorkExecution;
 import dev.adrian.goral.localhivebackend.domain.work.WorkExecutionDisplayName;
@@ -28,8 +29,12 @@ import dev.adrian.goral.localhivebackend.repository.work.WorkDefinitionRepositor
 import dev.adrian.goral.localhivebackend.repository.work.WorkDefinitionVersionRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkExecutionRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkInstanceRepository;
+import dev.adrian.goral.localhivebackend.service.work.CreateOneOffExecutionCommand;
 import dev.adrian.goral.localhivebackend.service.work.DefinitionContentCommand;
 import dev.adrian.goral.localhivebackend.service.work.DefinitionManagementService;
+import dev.adrian.goral.localhivebackend.service.work.WorkExecutionAssignmentService;
+import dev.adrian.goral.localhivebackend.service.work.WorkExecutionCreationService;
+import dev.adrian.goral.localhivebackend.service.work.WorkExecutionLifecycleService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -65,6 +70,7 @@ class AdminCreateExecutionControllerIntegrationTest {
     private static final String API_KEY_HEADER = "X-API-KEY";
     private static final String ADMIN_USERNAME = "m10-admin";
     private static final String CREATE_EXECUTION_PATH = "/api/admin/executions";
+    private static final LocalDateTime BASE_TIME = LocalDateTime.parse("2026-07-20T10:00:00");
 
     @Container
     @ServiceConnection
@@ -78,6 +84,15 @@ class AdminCreateExecutionControllerIntegrationTest {
 
     @Autowired
     private DefinitionManagementService definitionManagementService;
+
+    @Autowired
+    private WorkExecutionCreationService creationService;
+
+    @Autowired
+    private WorkExecutionAssignmentService assignmentService;
+
+    @Autowired
+    private WorkExecutionLifecycleService lifecycleService;
 
     @Autowired
     private WorkDefinitionRepository definitionRepository;
@@ -323,6 +338,302 @@ class AdminCreateExecutionControllerIntegrationTest {
     }
 
     @Test
+    void shouldKeepRequireAssignmentIndependentFromActiveExecutionCheck() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        Worker worker = createApprovedWorker("require-active");
+        createAssignedExecution(version, worker, WorkExecutionStatus.ASSIGNED, BASE_TIME.plusMinutes(1));
+
+        String response = mockMvc.perform(adminCreate(noOpCreateRequest(
+                        version.getId(),
+                        worker.getId(),
+                        "Second explicit task"
+                )))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("ASSIGNED"))
+                .andExpect(jsonPath("$.assignment.workerId").value(worker.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("REQUIRE"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        UUID executionId = UUID.fromString(JsonPath.read(response, "$.executionId"));
+        assertSafeCreateResponse(response);
+        assertAssignedExecution(executionId, worker, "Second explicit task", ExecutionAssignmentMode.REQUIRE);
+    }
+
+    @Test
+    void shouldAutoSelectEligibleWorkerAndAllowClaim() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        createWorker(
+                "auto-pending",
+                WorkerApprovalStatus.PENDING,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE
+        );
+        createWorker(
+                "auto-offline",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.OFFLINE,
+                WorkerAvailabilityStatus.AVAILABLE
+        );
+        createWorker(
+                "auto-paused",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.PAUSED
+        );
+        WorkerCredentials selectedWorker = createWorkerCredentials(
+                "auto-selected",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE
+        );
+
+        String response = mockMvc.perform(adminCreate(noOpAutoCreateRequest(version.getId(), "Auto NO_OP")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.displayName").value("Auto NO_OP"))
+                .andExpect(jsonPath("$.status").value("ASSIGNED"))
+                .andExpect(jsonPath("$.assignment.workerId").value(selectedWorker.worker().getId().toString()))
+                .andExpect(jsonPath("$.assignment.workerHostname").value(selectedWorker.worker().getHostname()))
+                .andExpect(jsonPath("$.assignment.mode").value("AUTO"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        UUID executionId = UUID.fromString(JsonPath.read(response, "$.executionId"));
+        assertSafeCreateResponse(response);
+        assertAssignedExecution(executionId, selectedWorker.worker(), "Auto NO_OP", ExecutionAssignmentMode.AUTO);
+
+        mockMvc.perform(post(
+                        "/api/workers/{workerId}/assigned-executions/claim-next",
+                        selectedWorker.worker().getId()
+                )
+                        .header(API_KEY_HEADER, selectedWorker.rawApiKey())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.executionId").value(executionId.toString()))
+                .andExpect(jsonPath("$.displayName").value("Auto NO_OP"));
+    }
+
+    @Test
+    void shouldRejectAutoWorkerIdAndReturnConflictWhenNoEligibleWorkerExists() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        Worker approvedWorker = createApprovedWorker("auto-worker-id-rejected");
+
+        expectBadRequest(noOpCreateRequestWithMode(version.getId(), approvedWorker.getId(), "AUTO"));
+
+        assignmentRepository.deleteAll();
+        executionRepository.deleteAll();
+        workerRepository.deleteAll();
+        createWorker(
+                "auto-conflict-pending",
+                WorkerApprovalStatus.PENDING,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE
+        );
+        createWorker(
+                "auto-conflict-offline",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.OFFLINE,
+                WorkerAvailabilityStatus.AVAILABLE
+        );
+        createWorker(
+                "auto-conflict-paused",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.PAUSED
+        );
+
+        expectConflict(noOpAutoCreateRequest(version.getId(), "No eligible worker"));
+    }
+
+    @Test
+    void shouldAutoIgnoreActiveExecutionsAndAllowTerminalHistory() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        Worker assignedWorker = createApprovedWorker("auto-active-assigned");
+        Worker claimedWorker = createApprovedWorker("auto-active-claimed");
+        Worker runningWorker = createApprovedWorker("auto-active-running");
+        Worker terminalWorker = createApprovedWorker("auto-terminal-history");
+        createAssignedExecution(version, assignedWorker, WorkExecutionStatus.ASSIGNED, BASE_TIME.plusMinutes(1));
+        createAssignedExecution(version, claimedWorker, WorkExecutionStatus.CLAIMED, BASE_TIME.plusMinutes(2));
+        createAssignedExecution(version, runningWorker, WorkExecutionStatus.RUNNING, BASE_TIME.plusMinutes(3));
+        createAssignedExecution(version, terminalWorker, WorkExecutionStatus.SUCCEEDED, BASE_TIME.plusMinutes(4));
+
+        mockMvc.perform(adminCreate(noOpAutoCreateRequest(version.getId(), "Terminal history allowed")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(terminalWorker.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("AUTO"));
+    }
+
+    @Test
+    void shouldAutoAllowWorkerWithFailedExecutionHistory() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        Worker failedHistoryWorker = createApprovedWorker("auto-failed-history");
+        createAssignedExecution(version, failedHistoryWorker, WorkExecutionStatus.FAILED, BASE_TIME.plusMinutes(1));
+
+        mockMvc.perform(adminCreate(noOpAutoCreateRequest(version.getId(), "Failed history allowed")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(failedHistoryWorker.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("AUTO"));
+    }
+
+    @Test
+    void shouldPreferEligiblePreferredWorkerAndFallbackWhenPreferredIsIneligible() throws Exception {
+        WorkDefinitionVersion noOpVersion = noOpVersion();
+        WorkDefinitionVersion dockerVersion = dockerVersion();
+        Worker lowerScorePreferred = createWorker(
+                "prefer-eligible",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE,
+                1024,
+                2
+        );
+        Worker higherScoreWorker = createWorker(
+                "prefer-higher-score",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE,
+                8192,
+                16
+        );
+
+        mockMvc.perform(adminCreate(noOpPreferCreateRequest(
+                        noOpVersion.getId(),
+                        lowerScorePreferred.getId(),
+                        "Use preferred"
+                )))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(lowerScorePreferred.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("PREFER"));
+        createAssignedExecution(noOpVersion, higherScoreWorker, WorkExecutionStatus.ASSIGNED, BASE_TIME.plusMinutes(4));
+
+        assertPreferFallsBack(
+                noOpVersion,
+                createWorker(
+                        "prefer-offline",
+                        WorkerApprovalStatus.APPROVED,
+                        WorkerConnectionStatus.OFFLINE,
+                        WorkerAvailabilityStatus.AVAILABLE
+                ),
+                createApprovedWorker("prefer-offline-fallback"),
+                "Fallback from offline"
+        );
+        assertPreferFallsBack(
+                noOpVersion,
+                createWorker(
+                        "prefer-paused",
+                        WorkerApprovalStatus.APPROVED,
+                        WorkerConnectionStatus.ONLINE,
+                        WorkerAvailabilityStatus.PAUSED
+                ),
+                createApprovedWorker("prefer-paused-fallback"),
+                "Fallback from paused"
+        );
+        Worker activePreferred = createApprovedWorker("prefer-active");
+        createAssignedExecution(noOpVersion, activePreferred, WorkExecutionStatus.ASSIGNED, BASE_TIME.plusMinutes(5));
+        assertPreferFallsBack(
+                noOpVersion,
+                activePreferred,
+                createApprovedWorker("prefer-active-fallback"),
+                "Fallback from active"
+        );
+        Worker lowResourcePreferred = createWorker(
+                "prefer-low-resource",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE,
+                64,
+                1
+        );
+        Worker resourceFallback = createWorker(
+                "prefer-resource-fallback",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE,
+                512,
+                4
+        );
+        mockMvc.perform(adminCreate(dockerCreateRequestWithMode(
+                        dockerVersion.getId(),
+                        lowResourcePreferred.getId(),
+                        "PREFER",
+                        "Fallback from resources",
+                        128,
+                        1
+                )))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(resourceFallback.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("PREFER"));
+    }
+
+    @Test
+    void shouldRejectInvalidPreferSelectionRequests() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        Worker offlineWorker = createWorker(
+                "prefer-no-fallback",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.OFFLINE,
+                WorkerAvailabilityStatus.AVAILABLE
+        );
+
+        expectBadRequest("""
+                {
+                  "workDefinitionVersionId": "%s",
+                  "assignmentMode": "PREFER",
+                  "configuration": {}
+                }
+                """.formatted(version.getId()));
+        expectNotFound(noOpPreferCreateRequest(version.getId(), UUID.randomUUID(), "Unknown preferred"));
+        expectConflict(noOpPreferCreateRequest(version.getId(), offlineWorker.getId(), "No fallback"));
+    }
+
+    @Test
+    void shouldApplyDockerResourceFitDuringAutoSelection() throws Exception {
+        WorkDefinitionVersion dockerVersion = dockerVersion();
+        createWorker(
+                "docker-low-memory",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE,
+                127,
+                16
+        );
+        createWorker(
+                "docker-low-cpu",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE,
+                8192,
+                0
+        );
+        createWorker(
+                "docker-zero-shared",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE,
+                0,
+                16
+        );
+
+        expectConflict(dockerAutoCreateRequest(dockerVersion.getId(), "No Docker fit", 128, 1));
+
+        Worker exactFit = createWorker(
+                "docker-exact-fit",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE,
+                128,
+                1
+        );
+
+        mockMvc.perform(adminCreate(dockerAutoCreateRequest(dockerVersion.getId(), "Exact Docker fit", 128, 1)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(exactFit.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("AUTO"));
+    }
+
+    @Test
     void shouldRejectInvalidAdminCreateExecutionRequests() throws Exception {
         WorkDefinitionVersion noOpVersion = noOpVersion();
         WorkDefinitionVersion dockerVersion = dockerVersion();
@@ -398,7 +709,6 @@ class AdminCreateExecutionControllerIntegrationTest {
         expectNotFound(noOpCreateRequest(noOpVersion.getId(), UUID.randomUUID(), "Unknown worker"));
         expectBadRequest(noOpCreateRequest(noOpVersion.getId(), pendingWorker.getId(), "Pending worker"));
         expectBadRequest(noOpCreateRequestWithMode(noOpVersion.getId(), approvedWorker.getId(), "AUTO"));
-        expectBadRequest(noOpCreateRequestWithMode(noOpVersion.getId(), approvedWorker.getId(), "PREFER"));
         expectBadRequest(noOpCreateRequest(
                 noOpVersion.getId(),
                 approvedWorker.getId(),
@@ -593,7 +903,19 @@ class AdminCreateExecutionControllerIntegrationTest {
                 .andExpect(status().isNotFound());
     }
 
+    private void expectConflict(String body) throws Exception {
+        mockMvc.perform(adminCreate(body))
+                .andExpect(status().isConflict());
+    }
+
     private void assertAssignedExecution(UUID executionId, Worker worker, String displayName) {
+        assertAssignedExecution(executionId, worker, displayName, ExecutionAssignmentMode.REQUIRE);
+    }
+
+    private void assertAssignedExecution(UUID executionId,
+                                         Worker worker,
+                                         String displayName,
+                                         ExecutionAssignmentMode assignmentMode) {
         assertThat(executionRepository.findById(executionId))
                 .hasValueSatisfying(execution -> {
                     assertThat(execution.getStatus()).isEqualTo(WorkExecutionStatus.ASSIGNED);
@@ -602,11 +924,21 @@ class AdminCreateExecutionControllerIntegrationTest {
                             .hasValueSatisfying(assignment -> {
                                 assertThat(assignment.getExecution().getId()).isEqualTo(executionId);
                                 assertThat(assignment.getWorker().getId()).isEqualTo(worker.getId());
-                                assertThat(assignment.getAssignmentMode()).isEqualTo(ExecutionAssignmentMode.REQUIRE);
+                                assertThat(assignment.getAssignmentMode()).isEqualTo(assignmentMode);
                                 assertThat(assignment.getLeaseTokenHash()).isNull();
                                 assertThat(assignment.getLeaseExpiresAt()).isNull();
                             });
                 });
+    }
+
+    private void assertPreferFallsBack(WorkDefinitionVersion version,
+                                       Worker preferredWorker,
+                                       Worker fallbackWorker,
+                                       String displayName) throws Exception {
+        mockMvc.perform(adminCreate(noOpPreferCreateRequest(version.getId(), preferredWorker.getId(), displayName)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(fallbackWorker.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("PREFER"));
     }
 
     private String noOpCreateRequest(UUID versionId, UUID workerId, String displayName) {
@@ -629,6 +961,29 @@ class AdminCreateExecutionControllerIntegrationTest {
                   "configuration": {}
                 }
                 """.formatted(versionId, workerId, assignmentMode);
+    }
+
+    private String noOpAutoCreateRequest(UUID versionId, String displayName) {
+        return """
+                {
+                  "workDefinitionVersionId": "%s",
+                  "assignmentMode": "AUTO",
+                  "displayName": "%s",
+                  "configuration": {}
+                }
+                """.formatted(versionId, displayName);
+    }
+
+    private String noOpPreferCreateRequest(UUID versionId, UUID workerId, String displayName) {
+        return """
+                {
+                  "workDefinitionVersionId": "%s",
+                  "workerId": "%s",
+                  "assignmentMode": "PREFER",
+                  "displayName": "%s",
+                  "configuration": {}
+                }
+                """.formatted(versionId, workerId, displayName);
     }
 
     private String noOpCreateRequestWithConfiguration(UUID versionId, UUID workerId, String configuration) {
@@ -675,6 +1030,60 @@ class AdminCreateExecutionControllerIntegrationTest {
                   "configuration": %s
                 }
                 """.formatted(versionId, workerId, displayName, configuration);
+    }
+
+    private String dockerCreateRequestWithMode(UUID versionId,
+                                               UUID workerId,
+                                               String assignmentMode,
+                                               String displayName,
+                                               int memoryMb,
+                                               int cpuCores) {
+        return """
+                {
+                  "workDefinitionVersionId": "%s",
+                  "workerId": "%s",
+                  "assignmentMode": "%s",
+                  "displayName": "%s",
+                  "configuration": %s
+                }
+                """.formatted(
+                versionId,
+                workerId,
+                assignmentMode,
+                displayName,
+                dockerConfiguration(
+                        "alpine:3.20",
+                        "[\"sh\", \"-c\", \"echo m11\"]",
+                        30,
+                        memoryMb,
+                        cpuCores,
+                        false,
+                        null
+                )
+        );
+    }
+
+    private String dockerAutoCreateRequest(UUID versionId, String displayName, int memoryMb, int cpuCores) {
+        return """
+                {
+                  "workDefinitionVersionId": "%s",
+                  "assignmentMode": "AUTO",
+                  "displayName": "%s",
+                  "configuration": %s
+                }
+                """.formatted(
+                versionId,
+                displayName,
+                dockerConfiguration(
+                        "alpine:3.20",
+                        "[\"sh\", \"-c\", \"echo m11\"]",
+                        30,
+                        memoryMb,
+                        cpuCores,
+                        false,
+                        null
+                )
+        );
     }
 
     private String dockerConfiguration(String image,
@@ -795,6 +1204,54 @@ class AdminCreateExecutionControllerIntegrationTest {
         ));
     }
 
+    private WorkExecution createAssignedExecution(WorkDefinitionVersion version,
+                                                  Worker worker,
+                                                  WorkExecutionStatus status,
+                                                  LocalDateTime assignedAt) {
+        WorkExecution execution = creationService.createOneOffExecution(new CreateOneOffExecutionCommand(
+                version.getId(),
+                JsonNodeFactory.instance.objectNode(),
+                ResourceRequestOverrides.empty(),
+                "Existing " + status.name()
+        ));
+        assignmentService.assignExecution(
+                execution.getId(),
+                worker.getId(),
+                ExecutionAssignmentMode.AUTO,
+                assignedAt
+        );
+
+        switch (status) {
+            case ASSIGNED -> {
+            }
+            case CLAIMED -> lifecycleService.markClaimed(execution.getId(), assignedAt.plusMinutes(1));
+            case RUNNING -> {
+                lifecycleService.markClaimed(execution.getId(), assignedAt.plusMinutes(1));
+                lifecycleService.markRunning(execution.getId(), assignedAt.plusMinutes(2));
+            }
+            case SUCCEEDED -> {
+                lifecycleService.markClaimed(execution.getId(), assignedAt.plusMinutes(1));
+                lifecycleService.markRunning(execution.getId(), assignedAt.plusMinutes(2));
+                lifecycleService.markSucceeded(execution.getId(), assignedAt.plusMinutes(3));
+            }
+            case FAILED -> {
+                lifecycleService.markClaimed(execution.getId(), assignedAt.plusMinutes(1));
+                lifecycleService.markRunning(execution.getId(), assignedAt.plusMinutes(2));
+                lifecycleService.markFailed(
+                        execution.getId(),
+                        "TEST_FAILURE",
+                        "Test failure",
+                        assignedAt.plusMinutes(3)
+                );
+            }
+            case QUEUED, CANCELLED, EXPIRED -> throw new IllegalArgumentException(
+                    "Unsupported assigned test status: " + status
+            );
+        }
+
+        return executionRepository.findById(execution.getId()).orElseThrow();
+    }
+
     private Worker createApprovedWorker(String suffix) {
         return createWorker(
                 suffix,
@@ -818,13 +1275,22 @@ class AdminCreateExecutionControllerIntegrationTest {
                                 WorkerApprovalStatus approvalStatus,
                                 WorkerConnectionStatus connectionStatus,
                                 WorkerAvailabilityStatus availabilityStatus) {
+        return createWorker(suffix, approvalStatus, connectionStatus, availabilityStatus, 8192, 16);
+    }
+
+    private Worker createWorker(String suffix,
+                                WorkerApprovalStatus approvalStatus,
+                                WorkerConnectionStatus connectionStatus,
+                                WorkerAvailabilityStatus availabilityStatus,
+                                int sharedRamMb,
+                                int cpuCores) {
         return workerRepository.save(Worker.builder()
                 .hostname("m10-worker-" + suffix + "-" + UUID.randomUUID())
                 .ipAddress("192.168.1.10")
                 .osType("Linux")
                 .totalRamMb(32768)
-                .sharedRamMb(8192)
-                .cpuCores(16)
+                .sharedRamMb(sharedRamMb)
+                .cpuCores(cpuCores)
                 .approvalStatus(approvalStatus)
                 .connectionStatus(connectionStatus)
                 .availabilityStatus(availabilityStatus)

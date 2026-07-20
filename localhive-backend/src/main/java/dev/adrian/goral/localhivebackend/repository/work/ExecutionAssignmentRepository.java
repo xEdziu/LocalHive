@@ -8,6 +8,8 @@ import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
@@ -46,4 +48,19 @@ public interface ExecutionAssignmentRepository extends JpaRepository<ExecutionAs
     boolean existsByExecution(WorkExecution execution);
 
     boolean existsByWorkerAndExecution_StatusIn(Worker worker, Collection<WorkExecutionStatus> statuses);
+
+    @Query("""
+            SELECT assignment.worker.id AS workerId, MAX(assignment.assignedAt) AS latestAssignedAt
+            FROM ExecutionAssignment assignment
+            WHERE assignment.worker.id IN :workerIds
+            GROUP BY assignment.worker.id
+            """)
+    List<LatestWorkerAssignment> findLatestAssignedAtByWorkerIds(@Param("workerIds") Collection<UUID> workerIds);
+
+    interface LatestWorkerAssignment {
+
+        UUID getWorkerId();
+
+        LocalDateTime getLatestAssignedAt();
+    }
 }

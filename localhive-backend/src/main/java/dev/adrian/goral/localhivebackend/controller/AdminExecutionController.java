@@ -7,6 +7,7 @@ import dev.adrian.goral.localhivebackend.dto.AdminExecutionDetailResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionListResponseDto;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionCreationService;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionQueryService;
+import dev.adrian.goral.localhivebackend.service.work.WorkerSelectionService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -40,6 +41,8 @@ public class AdminExecutionController {
     ) {
         try {
             return ResponseEntity.status(HttpStatus.CREATED).body(creationService.createExecution(request));
+        } catch (WorkerSelectionService.NoEligibleWorkerException e) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
         } catch (NoSuchElementException e) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
         } catch (IllegalArgumentException | IllegalStateException e) {

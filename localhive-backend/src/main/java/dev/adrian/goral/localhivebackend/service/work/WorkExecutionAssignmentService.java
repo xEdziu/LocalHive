@@ -45,7 +45,8 @@ public class WorkExecutionAssignmentService {
                 workerId,
                 assignmentMode,
                 assignedAt,
-                WorkerEligibility.APPROVED_ONLINE_AVAILABLE
+                WorkerEligibility.APPROVED_ONLINE_AVAILABLE,
+                true
         );
     }
 
@@ -59,7 +60,8 @@ public class WorkExecutionAssignmentService {
                 workerId,
                 assignmentMode,
                 assignedAt,
-                WorkerEligibility.APPROVED_ONLY
+                WorkerEligibility.APPROVED_ONLY,
+                false
         );
     }
 
@@ -67,7 +69,8 @@ public class WorkExecutionAssignmentService {
                                                 UUID workerId,
                                                 ExecutionAssignmentMode assignmentMode,
                                                 LocalDateTime assignedAt,
-                                                WorkerEligibility workerEligibility) {
+                                                WorkerEligibility workerEligibility,
+                                                boolean requireNoActiveExecution) {
         ExecutionAssignmentMode validAssignmentMode = Objects.requireNonNull(
                 assignmentMode,
                 "assignmentMode must not be null."
@@ -79,7 +82,9 @@ public class WorkExecutionAssignmentService {
         requireQueuedExecution(execution);
         requireNoExistingAssignment(execution);
         workerEligibility.require(worker);
-        requireWorkerHasNoActiveExecution(worker);
+        if (requireNoActiveExecution) {
+            requireWorkerHasNoActiveExecution(worker);
+        }
 
         execution.markAssigned(validAssignedAt);
         ExecutionAssignment assignment = ExecutionAssignment.create(
