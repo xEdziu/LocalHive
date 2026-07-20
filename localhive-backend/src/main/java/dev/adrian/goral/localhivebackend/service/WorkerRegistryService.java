@@ -29,6 +29,7 @@ public class WorkerRegistryService {
     private final WorkerRepository workerRepository;
     private final PasswordEncoder passwordEncoder;
     private final WorkerAuthService workerAuthService;
+    private final WorkerCapabilitiesService workerCapabilitiesService;
 
     /**
      * Registers a new agent requesting to join the cluster (Zero Trust approach).
@@ -206,12 +207,17 @@ public class WorkerRegistryService {
         WorkerAvailabilityStatus newAvailability = request.pauseEnabled()
                 ? WorkerAvailabilityStatus.PAUSED
                 : WorkerAvailabilityStatus.AVAILABLE;
+        LocalDateTime heartbeatAt = LocalDateTime.now();
+
+        if (request.capabilities() != null) {
+            workerCapabilitiesService.replaceCapabilities(worker, request.capabilities(), heartbeatAt);
+        }
 
         if (worker.getConnectionStatus() == WorkerConnectionStatus.OFFLINE) {
             log.info("Machine {} has returned online and is now {}.", worker.getHostname(), newAvailability);
         }
 
-        worker.setLastHeartbeatAt(LocalDateTime.now());
+        worker.setLastHeartbeatAt(heartbeatAt);
         worker.setConnectionStatus(WorkerConnectionStatus.ONLINE);
         worker.setAvailabilityStatus(newAvailability);
         worker.setSharedRamMb(request.sharedRamMb());

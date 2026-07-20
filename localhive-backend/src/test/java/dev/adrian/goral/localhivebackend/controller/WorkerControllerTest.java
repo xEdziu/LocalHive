@@ -508,7 +508,75 @@ class WorkerControllerTest {
         verify(workerRegistryService).handleHeartbeat(
                 eq(workerId),
                 eq("worker-api-key"),
-                argThat(dto -> dto.pauseEnabled() == false && dto.sharedRamMb() == 4096)
+                argThat(dto -> dto.pauseEnabled() == false
+                        && dto.sharedRamMb() == 4096
+                        && dto.capabilities() == null)
+        );
+    }
+
+    @Test
+    @DisplayName("Should return 200 when heartbeat includes worker capabilities")
+    void shouldReturnOkWhenHeartbeatIncludesCapabilities() throws Exception {
+        // Given
+        when(setupService.isSetupRequired()).thenReturn(false);
+
+        UUID workerId = UUID.randomUUID();
+        String apiKey = "worker-api-key";
+        String apiKeyHash = "hashed-api-key";
+
+        when(workerRepository.findById(workerId)).thenReturn(Optional.of(authenticatedWorker(workerId, apiKeyHash)));
+        when(passwordEncoder.matches(apiKey, apiKeyHash)).thenReturn(true);
+
+        var heartbeatRequest = java.util.Map.of(
+                "pauseEnabled", false,
+                "sharedRamMb", 4096,
+                "capabilities", java.util.Map.of(
+                        "executors", java.util.List.of(
+                                java.util.Map.of(
+                                        "executorId", "localhive.no-op",
+                                        "executorContractVersion", 1,
+                                        "enabled", true
+                                ),
+                                java.util.Map.of(
+                                        "executorId", "localhive.docker.workload",
+                                        "executorContractVersion", 1,
+                                        "enabled", true
+                                )
+                        ),
+                        "docker", java.util.Map.of(
+                                "enabled", true,
+                                "allowedImages", java.util.List.of("alpine:3.20"),
+                                "maxMemoryMb", 4096,
+                                "maxCpuCores", 8,
+                                "gpuAllowed", false
+                        )
+                )
+        );
+
+        // When + Then
+        mockMvc.perform(post("/api/workers/{workerId}/heartbeat", workerId)
+                        .header("X-API-KEY", apiKey)
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(heartbeatRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("success"));
+
+        verify(workerRegistryService).handleHeartbeat(
+                eq(workerId),
+                eq("worker-api-key"),
+                argThat(dto -> dto.pauseEnabled() == false
+                        && dto.sharedRamMb() == 4096
+                        && dto.capabilities() != null
+                        && dto.capabilities().executors().size() == 2
+                        && "localhive.no-op".equals(dto.capabilities().executors().get(0).executorId())
+                        && dto.capabilities().executors().get(0).executorContractVersion() == 1
+                        && Boolean.TRUE.equals(dto.capabilities().executors().get(0).enabled())
+                        && Boolean.TRUE.equals(dto.capabilities().docker().enabled())
+                        && dto.capabilities().docker().allowedImages().equals(java.util.List.of("alpine:3.20"))
+                        && dto.capabilities().docker().maxMemoryMb() == 4096
+                        && dto.capabilities().docker().maxCpuCores() == 8
+                        && Boolean.FALSE.equals(dto.capabilities().docker().gpuAllowed()))
         );
     }
 

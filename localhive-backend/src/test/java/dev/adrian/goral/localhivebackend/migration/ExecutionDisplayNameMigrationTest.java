@@ -46,7 +46,7 @@ class ExecutionDisplayNameMigrationTest {
         Flyway flyway = flyway(null);
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("10");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("11");
 
         try (Connection connection = connection()) {
             assertThat(columns(connection, "work_executions")).contains("display_name_snapshot");

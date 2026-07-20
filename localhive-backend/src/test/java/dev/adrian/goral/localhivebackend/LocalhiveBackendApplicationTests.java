@@ -45,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("10");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("11");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -55,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8', '9', '10') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(10);
+        assertThat(appliedMigrationCount).isEqualTo(11);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -79,7 +79,8 @@ class LocalhiveBackendApplicationTests {
                 "execution_assignments",
                 "execution_attempts",
                 "artifacts",
-                "execution_artifacts"
+                "execution_artifacts",
+                "worker_capabilities"
         );
 
         List<String> workerColumns = jdbcTemplate.queryForList(
@@ -312,6 +313,38 @@ class LocalhiveBackendApplicationTests {
                         "fk_execution_artifacts_uploaded_by_worker_id",
                         "execution_artifacts_relative_path_not_blank_check"
                 );
+
+        List<String> workerCapabilitiesColumns = jdbcTemplate.queryForList(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'worker_capabilities'",
+                String.class
+        );
+        assertThat(workerCapabilitiesColumns)
+                .contains(
+                        "worker_id",
+                        "reported_at",
+                        "executors",
+                        "docker_enabled",
+                        "docker_allowed_images",
+                        "docker_max_memory_mb",
+                        "docker_max_cpu_cores",
+                        "docker_gpu_allowed"
+                );
+
+        List<String> workerCapabilitiesConstraints = jdbcTemplate.queryForList("""
+                select constraint_name
+                from information_schema.table_constraints
+                where table_schema = 'public'
+                  and table_name = 'worker_capabilities'
+                """, String.class);
+        assertThat(workerCapabilitiesConstraints)
+                .contains(
+                        "worker_capabilities_pkey",
+                        "fk_worker_capabilities_worker",
+                        "chk_worker_capabilities_executors_array_size",
+                        "chk_worker_capabilities_docker_allowed_images_array_size",
+                        "chk_worker_capabilities_docker_max_memory_non_negative",
+                        "chk_worker_capabilities_docker_max_cpu_non_negative"
+                );
     }
 
     @Test
@@ -344,6 +377,76 @@ class LocalhiveBackendApplicationTests {
                 "minecraft",
                 "TASK",
                 "LOCAL"
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void workerCapabilityConstraintsRequireArrayPayloadsAndNonNegativeDockerLimits() {
+        UUID validWorkerId = UUID.randomUUID();
+        insertSchemaWorker(validWorkerId, "capabilities-valid");
+
+        jdbcTemplate.update("""
+                insert into worker_capabilities (
+                    worker_id,
+                    reported_at,
+                    executors,
+                    docker_enabled,
+                    docker_allowed_images,
+                    docker_max_memory_mb,
+                    docker_max_cpu_cores,
+                    docker_gpu_allowed
+                ) values (?, current_timestamp, ?::jsonb, ?, ?::jsonb, ?, ?, ?)
+                """,
+                validWorkerId,
+                "[{\"executorId\":\"localhive.no-op\",\"executorContractVersion\":1,\"enabled\":true}]",
+                true,
+                "[\"alpine:3.20\"]",
+                4096,
+                8,
+                false
+        );
+
+        UUID invalidExecutorsWorkerId = UUID.randomUUID();
+        insertSchemaWorker(invalidExecutorsWorkerId, "capabilities-invalid-executors");
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into worker_capabilities (
+                    worker_id,
+                    reported_at,
+                    executors
+                ) values (?, current_timestamp, ?::jsonb)
+                """,
+                invalidExecutorsWorkerId,
+                "{}"
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        UUID invalidImagesWorkerId = UUID.randomUUID();
+        insertSchemaWorker(invalidImagesWorkerId, "capabilities-invalid-images");
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into worker_capabilities (
+                    worker_id,
+                    reported_at,
+                    executors,
+                    docker_allowed_images
+                ) values (?, current_timestamp, ?::jsonb, ?::jsonb)
+                """,
+                invalidImagesWorkerId,
+                "[]",
+                "{}"
+        )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        UUID negativeMemoryWorkerId = UUID.randomUUID();
+        insertSchemaWorker(negativeMemoryWorkerId, "capabilities-negative-memory");
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into worker_capabilities (
+                    worker_id,
+                    reported_at,
+                    executors,
+                    docker_max_memory_mb
+                ) values (?, current_timestamp, ?::jsonb, ?)
+                """,
+                negativeMemoryWorkerId,
+                "[]",
+                -1
         )).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
@@ -782,6 +885,36 @@ class LocalhiveBackendApplicationTests {
                 "2".repeat(64),
                 artifactId + "/artifact",
                 "schema-test"
+        );
+    }
+
+    private void insertSchemaWorker(UUID workerId, String suffix) {
+        jdbcTemplate.update("""
+                insert into workers (
+                    id,
+                    api_key_hash,
+                    cpu_cores,
+                    hostname,
+                    ip_address,
+                    os_type,
+                    shared_ram_mb,
+                    approval_status,
+                    connection_status,
+                    availability_status,
+                    total_ram_mb
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                workerId,
+                "hashed-api-key",
+                16,
+                "schema-worker-" + suffix + "-" + UUID.randomUUID(),
+                "192.168.1.10",
+                "Linux",
+                8192,
+                "APPROVED",
+                "ONLINE",
+                "AVAILABLE",
+                32768
         );
     }
 }

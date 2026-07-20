@@ -4,6 +4,7 @@ import dev.adrian.goral.localhivebackend.domain.Worker;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
+import dev.adrian.goral.localhivebackend.dto.WorkerCapabilitiesDto;
 import dev.adrian.goral.localhivebackend.dto.WorkerHeartbeatRequestDto;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import org.junit.jupiter.api.DisplayName;
@@ -12,11 +13,14 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -27,10 +31,12 @@ class WorkerRegistryServiceTest {
     private final WorkerRepository workerRepository = mock(WorkerRepository.class);
     private final PasswordEncoder passwordEncoder = mock(PasswordEncoder.class);
     private final WorkerAuthService workerAuthService = mock(WorkerAuthService.class);
+    private final WorkerCapabilitiesService workerCapabilitiesService = mock(WorkerCapabilitiesService.class);
     private final WorkerRegistryService workerRegistryService = new WorkerRegistryService(
             workerRepository,
             passwordEncoder,
-            workerAuthService
+            workerAuthService,
+            workerCapabilitiesService
     );
 
     @Test
@@ -166,6 +172,29 @@ class WorkerRegistryServiceTest {
         verify(workerRepository).save(worker);
     }
 
+    @Test
+    @DisplayName("Heartbeat stores reported worker capabilities")
+    void shouldStoreReportedCapabilitiesWhenHeartbeatContainsSnapshot() {
+        UUID workerId = UUID.randomUUID();
+        Worker worker = worker(
+                workerId,
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE
+        );
+        WorkerCapabilitiesDto capabilities = validCapabilities();
+        when(workerAuthService.verifyWorker(workerId, "api-key")).thenReturn(worker);
+
+        workerRegistryService.handleHeartbeat(
+                workerId,
+                "api-key",
+                new WorkerHeartbeatRequestDto(false, 8192, capabilities)
+        );
+
+        verify(workerCapabilitiesService).replaceCapabilities(eq(worker), eq(capabilities), any(LocalDateTime.class));
+        verify(workerRepository).save(worker);
+    }
+
     private static Worker worker(UUID workerId,
                                  WorkerApprovalStatus approvalStatus,
                                  WorkerConnectionStatus connectionStatus,
@@ -183,5 +212,21 @@ class WorkerRegistryServiceTest {
                 .connectionStatus(connectionStatus)
                 .availabilityStatus(availabilityStatus)
                 .build();
+    }
+
+    private static WorkerCapabilitiesDto validCapabilities() {
+        return new WorkerCapabilitiesDto(
+                List.of(
+                        new WorkerCapabilitiesDto.ExecutorCapabilityDto("localhive.no-op", 1, true),
+                        new WorkerCapabilitiesDto.ExecutorCapabilityDto("localhive.docker.workload", 1, true)
+                ),
+                new WorkerCapabilitiesDto.DockerCapabilityDto(
+                        true,
+                        List.of("alpine:3.20"),
+                        4096,
+                        8,
+                        false
+                )
+        );
     }
 }

@@ -15,7 +15,10 @@ import dev.adrian.goral.localhivebackend.domain.work.WorkDefinitionVersion;
 import dev.adrian.goral.localhivebackend.domain.work.WorkExecution;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionAssignmentMode;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
+import dev.adrian.goral.localhivebackend.dto.WorkerCapabilitiesDto;
+import dev.adrian.goral.localhivebackend.dto.WorkerHeartbeatRequestDto;
 import dev.adrian.goral.localhivebackend.repository.UserRepository;
+import dev.adrian.goral.localhivebackend.repository.WorkerCapabilitiesRepository;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.repository.artifact.ArtifactRepository;
 import dev.adrian.goral.localhivebackend.repository.artifact.ExecutionArtifactRepository;
@@ -33,6 +36,7 @@ import dev.adrian.goral.localhivebackend.service.work.WorkExecutionAssignmentSer
 import dev.adrian.goral.localhivebackend.service.work.WorkExecutionClaimService;
 import dev.adrian.goral.localhivebackend.service.work.WorkExecutionCreationService;
 import dev.adrian.goral.localhivebackend.service.work.WorkerExecutionReportService;
+import dev.adrian.goral.localhivebackend.service.WorkerRegistryService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -127,6 +131,12 @@ class AdminWorkerDetailControllerIntegrationTest {
     private WorkerRepository workerRepository;
 
     @Autowired
+    private WorkerCapabilitiesRepository workerCapabilitiesRepository;
+
+    @Autowired
+    private WorkerRegistryService workerRegistryService;
+
+    @Autowired
     private UserRepository userRepository;
 
     private User adminUser;
@@ -141,6 +151,7 @@ class AdminWorkerDetailControllerIntegrationTest {
         instanceRepository.deleteAll();
         versionRepository.deleteAll();
         definitionRepository.deleteAll();
+        workerCapabilitiesRepository.deleteAll();
         workerRepository.deleteAll();
         userRepository.deleteAll();
 
@@ -199,6 +210,7 @@ class AdminWorkerDetailControllerIntegrationTest {
                 .andExpect(jsonPath("$.heartbeat.lastSeenAt").value("2026-07-20T10:00:00"))
                 .andExpect(jsonPath("$.heartbeat.lastHeartbeatAt").value("2026-07-20T10:00:00"))
                 .andExpect(jsonPath("$.heartbeat.pauseEnabled").value(false))
+                .andExpect(jsonPath("$.capabilities").value(nullValue()))
                 .andExpect(jsonPath("$.currentExecution.executionId").value(runningExecution.getId().toString()))
                 .andExpect(jsonPath("$.currentExecution.displayName").value("Running execution"))
                 .andExpect(jsonPath("$.currentExecution.status").value("RUNNING"))
@@ -278,6 +290,7 @@ class AdminWorkerDetailControllerIntegrationTest {
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.workerId").value(worker.getId().toString()))
+                .andExpect(jsonPath("$.capabilities").value(nullValue()))
                 .andExpect(jsonPath("$.currentExecution").value(nullValue()))
                 .andExpect(jsonPath("$.lastExecution").value(nullValue()))
                 .andExpect(jsonPath("$.recentExecutions", hasSize(0)))
@@ -286,6 +299,81 @@ class AdminWorkerDetailControllerIntegrationTest {
                 .getContentAsString();
 
         assertSafeAdminWorkerDetailResponse(response, "unused-api-key");
+    }
+
+    @Test
+    void shouldReturnLatestCapabilitiesReportedByWorkerHeartbeat() throws Exception {
+        WorkerCredentials credentials = createApprovedWorkerCredentials(
+                "capabilities",
+                LocalDateTime.parse("2026-07-20T11:30:00")
+        );
+        Worker worker = credentials.worker();
+
+        workerRegistryService.handleHeartbeat(
+                worker.getId(),
+                credentials.rawApiKey(),
+                new WorkerHeartbeatRequestDto(false, 8192, validCapabilities())
+        );
+
+        String response = mockMvc.perform(get("/api/admin/workers/{workerId}", worker.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.capabilities.reportedAt").exists())
+                .andExpect(jsonPath("$.capabilities.executors", hasSize(2)))
+                .andExpect(jsonPath("$.capabilities.executors[0].executorId").value("localhive.no-op"))
+                .andExpect(jsonPath("$.capabilities.executors[0].executorContractVersion").value(1))
+                .andExpect(jsonPath("$.capabilities.executors[0].enabled").value(true))
+                .andExpect(jsonPath("$.capabilities.executors[1].executorId").value("localhive.docker.workload"))
+                .andExpect(jsonPath("$.capabilities.executors[1].executorContractVersion").value(1))
+                .andExpect(jsonPath("$.capabilities.executors[1].enabled").value(true))
+                .andExpect(jsonPath("$.capabilities.docker.enabled").value(true))
+                .andExpect(jsonPath("$.capabilities.docker.allowedImages", hasSize(1)))
+                .andExpect(jsonPath("$.capabilities.docker.allowedImages[0]").value("alpine:3.20"))
+                .andExpect(jsonPath("$.capabilities.docker.maxMemoryMb").value(4096))
+                .andExpect(jsonPath("$.capabilities.docker.maxCpuCores").value(8))
+                .andExpect(jsonPath("$.capabilities.docker.gpuAllowed").value(false))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminWorkerDetailResponse(response, credentials.rawApiKey());
+    }
+
+    @Test
+    void shouldPreserveStoredCapabilitiesWhenHeartbeatOmitsCapabilities() throws Exception {
+        WorkerCredentials credentials = createApprovedWorkerCredentials(
+                "capability-preserve",
+                LocalDateTime.parse("2026-07-20T11:45:00")
+        );
+        Worker worker = credentials.worker();
+
+        workerRegistryService.handleHeartbeat(
+                worker.getId(),
+                credentials.rawApiKey(),
+                new WorkerHeartbeatRequestDto(false, 8192, validCapabilities())
+        );
+        workerRegistryService.handleHeartbeat(
+                worker.getId(),
+                credentials.rawApiKey(),
+                new WorkerHeartbeatRequestDto(true, 4096)
+        );
+
+        String response = mockMvc.perform(get("/api/admin/workers/{workerId}", worker.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.hardware.sharedRamMb").value(4096))
+                .andExpect(jsonPath("$.status.availability").value("PAUSED"))
+                .andExpect(jsonPath("$.heartbeat.pauseEnabled").value(true))
+                .andExpect(jsonPath("$.capabilities.executors", hasSize(2)))
+                .andExpect(jsonPath("$.capabilities.executors[0].executorId").value("localhive.no-op"))
+                .andExpect(jsonPath("$.capabilities.docker.allowedImages[0]").value("alpine:3.20"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminWorkerDetailResponse(response, credentials.rawApiKey());
     }
 
     @Test
@@ -447,6 +535,22 @@ class AdminWorkerDetailControllerIntegrationTest {
                 .build());
     }
 
+    private static WorkerCapabilitiesDto validCapabilities() {
+        return new WorkerCapabilitiesDto(
+                List.of(
+                        new WorkerCapabilitiesDto.ExecutorCapabilityDto("localhive.no-op", 1, true),
+                        new WorkerCapabilitiesDto.ExecutorCapabilityDto("localhive.docker.workload", 1, true)
+                ),
+                new WorkerCapabilitiesDto.DockerCapabilityDto(
+                        true,
+                        List.of("alpine:3.20"),
+                        4096,
+                        8,
+                        false
+                )
+        );
+    }
+
     private static ObjectNode noOpConfiguration() {
         ObjectNode configuration = JsonNodeFactory.instance.objectNode();
         configuration.put("message", "noop");
@@ -470,6 +574,9 @@ class AdminWorkerDetailControllerIntegrationTest {
                 .doesNotContain("resolvedConfigurationSnapshot")
                 .doesNotContain("requestedConfigurationSnapshot")
                 .doesNotContain("do-not-expose-config")
+                .doesNotContain("masterBaseUrl")
+                .doesNotContain("configPath")
+                .doesNotContain("localhive-config")
                 .doesNotContain("storagePath")
                 .doesNotContain("dataRoot")
                 .doesNotContain(INTERNAL_STORAGE_MARKER)

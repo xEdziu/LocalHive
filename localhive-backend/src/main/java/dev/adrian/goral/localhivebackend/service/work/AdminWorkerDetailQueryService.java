@@ -10,6 +10,7 @@ import dev.adrian.goral.localhivebackend.dto.AdminWorkerDetailResponseDto;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.repository.artifact.ExecutionArtifactRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkExecutionRepository;
+import dev.adrian.goral.localhivebackend.service.WorkerCapabilitiesService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -40,6 +41,7 @@ public class AdminWorkerDetailQueryService {
     private final WorkerRepository workerRepository;
     private final WorkExecutionRepository executionRepository;
     private final ExecutionArtifactRepository artifactRepository;
+    private final WorkerCapabilitiesService workerCapabilitiesService;
 
     @Transactional(readOnly = true)
     public Optional<AdminWorkerDetailResponseDto> getWorkerDetail(UUID workerId) {
@@ -85,6 +87,7 @@ public class AdminWorkerDetailQueryService {
                         worker.getLastHeartbeatAt(),
                         WorkerAvailabilityStatus.PAUSED.equals(worker.getAvailabilityStatus())
                 ),
+                workerCapabilitiesService.findCapabilities(worker.getId()).orElse(null),
                 toExecutionSummary(currentExecution, artifactCounts),
                 toExecutionSummary(lastExecution, artifactCounts),
                 recentExecutions.stream()
