@@ -42,7 +42,7 @@ class WorkExecutionMigrationTest {
         Flyway flyway = flyway(null);
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("11");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("12");
 
         try (Connection connection = connection()) {
             assertThat(tables(connection))
@@ -107,7 +107,9 @@ class WorkExecutionMigrationTest {
                     .isInstanceOf(SQLException.class);
             assertThatThrownBy(() -> insertRunningExecutionWithoutStartedAt(connection, UUID.randomUUID(), versionId))
                     .isInstanceOf(SQLException.class);
-            assertThatThrownBy(() -> insertCancelledExecutionWithCompletedAt(connection, UUID.randomUUID(), versionId))
+            insertCancelledExecutionWithCompletedAt(connection, UUID.randomUUID(), versionId);
+            insertCancelledExecutionWithFailureFields(connection, UUID.randomUUID(), versionId);
+            assertThatThrownBy(() -> insertCancelledExecutionWithBlankFailureCode(connection, UUID.randomUUID(), versionId))
                     .isInstanceOf(SQLException.class);
         }
     }
@@ -498,6 +500,70 @@ class WorkExecutionMigrationTest {
             statement.setInt(4, 0);
             statement.setInt(5, 0);
             statement.setBoolean(6, false);
+            statement.executeUpdate();
+        }
+    }
+
+    private static void insertCancelledExecutionWithFailureFields(Connection connection,
+                                                                  UUID executionId,
+                                                                  UUID versionId) throws SQLException {
+        try (var statement = connection.prepareStatement("""
+                insert into work_executions (
+                    id,
+                    definition_version_id,
+                    status,
+                    created_at,
+                    queued_at,
+                    completed_at,
+                    cancelled_at,
+                    resolved_configuration_snapshot,
+                    resolved_required_ram_mb,
+                    resolved_required_cpu_cores,
+                    resolved_gpu_required,
+                    failure_code,
+                    failure_message
+                ) values (?, ?, ?, current_timestamp, current_timestamp, current_timestamp, current_timestamp, '{}'::jsonb, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setObject(1, executionId);
+            statement.setObject(2, versionId);
+            statement.setString(3, "CANCELLED");
+            statement.setInt(4, 0);
+            statement.setInt(5, 0);
+            statement.setBoolean(6, false);
+            statement.setString(7, "ADMIN_CANCELLED");
+            statement.setString(8, "Execution cancelled by admin.");
+            statement.executeUpdate();
+        }
+    }
+
+    private static void insertCancelledExecutionWithBlankFailureCode(Connection connection,
+                                                                     UUID executionId,
+                                                                     UUID versionId) throws SQLException {
+        try (var statement = connection.prepareStatement("""
+                insert into work_executions (
+                    id,
+                    definition_version_id,
+                    status,
+                    created_at,
+                    queued_at,
+                    completed_at,
+                    cancelled_at,
+                    resolved_configuration_snapshot,
+                    resolved_required_ram_mb,
+                    resolved_required_cpu_cores,
+                    resolved_gpu_required,
+                    failure_code,
+                    failure_message
+                ) values (?, ?, ?, current_timestamp, current_timestamp, current_timestamp, current_timestamp, '{}'::jsonb, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setObject(1, executionId);
+            statement.setObject(2, versionId);
+            statement.setString(3, "CANCELLED");
+            statement.setInt(4, 0);
+            statement.setInt(5, 0);
+            statement.setBoolean(6, false);
+            statement.setString(7, " ");
+            statement.setString(8, "Execution cancelled by admin.");
             statement.executeUpdate();
         }
     }

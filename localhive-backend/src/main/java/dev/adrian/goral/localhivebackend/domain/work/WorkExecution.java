@@ -202,6 +202,19 @@ public class WorkExecution {
         this.status = WorkExecutionStatus.CANCELLED;
     }
 
+    public void cancelBeforeStart(String failureCode, String failureMessage, LocalDateTime cancelledAt) {
+        requireOneOf("cancel execution before start", WorkExecutionStatus.QUEUED, WorkExecutionStatus.ASSIGNED);
+        LocalDateTime cancellationTimestamp = requireTimestamp(cancelledAt, "cancelledAt");
+        String validFailureCode = requireNonBlank(failureCode, "failureCode");
+        String validFailureMessage = requireNullableNonBlank(failureMessage, "failureMessage");
+
+        this.cancelledAt = cancellationTimestamp;
+        this.completedAt = cancellationTimestamp;
+        this.failureCode = validFailureCode;
+        this.failureMessage = validFailureMessage;
+        this.status = WorkExecutionStatus.CANCELLED;
+    }
+
     public void expire(LocalDateTime expiredAt) {
         requireOneOf("expire execution", WorkExecutionStatus.ASSIGNED, WorkExecutionStatus.CLAIMED);
         this.expiredAt = requireTimestamp(expiredAt, "expiredAt");

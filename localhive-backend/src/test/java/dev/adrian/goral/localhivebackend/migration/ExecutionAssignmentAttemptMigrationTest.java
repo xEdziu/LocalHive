@@ -45,7 +45,7 @@ class ExecutionAssignmentAttemptMigrationTest {
         Flyway flyway = flyway(null);
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("11");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("12");
 
         try (Connection connection = connection()) {
             assertThat(tables(connection))

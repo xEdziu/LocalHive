@@ -1,11 +1,13 @@
 package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
+import dev.adrian.goral.localhivebackend.dto.AdminCancelExecutionRequestDto;
 import dev.adrian.goral.localhivebackend.dto.AdminCreateExecutionRequestDto;
 import dev.adrian.goral.localhivebackend.dto.AdminCreateExecutionResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionDetailResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionListResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminSelectionDiagnosticsResponseDto;
+import dev.adrian.goral.localhivebackend.service.work.AdminExecutionCancelService;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionCreationService;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionQueryService;
 import dev.adrian.goral.localhivebackend.service.work.AdminSelectionDiagnosticsService;
@@ -22,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.LocalDateTime;
 import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.UUID;
@@ -37,6 +40,7 @@ public class AdminExecutionController {
     private final AdminExecutionQueryService queryService;
     private final AdminExecutionCreationService creationService;
     private final AdminSelectionDiagnosticsService diagnosticsService;
+    private final AdminExecutionCancelService cancelService;
 
     @PostMapping
     public ResponseEntity<AdminCreateExecutionResponseDto> createExecution(
@@ -63,6 +67,32 @@ public class AdminExecutionController {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
         } catch (IllegalArgumentException | IllegalStateException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
+
+    @PostMapping("/{executionId}/cancel")
+    public ResponseEntity<AdminExecutionDetailResponseDto> cancelExecution(
+            @PathVariable UUID executionId,
+            @RequestBody(required = false) AdminCancelExecutionRequestDto request
+    ) {
+        try {
+            cancelService.cancelExecution(
+                    executionId,
+                    request == null ? null : request.reason(),
+                    LocalDateTime.now()
+            );
+            AdminExecutionDetailResponseDto response = queryService.getExecution(executionId)
+                    .orElseThrow(() -> new ResponseStatusException(
+                            HttpStatus.NOT_FOUND,
+                            "Execution not found."
+                    ));
+            return ResponseEntity.ok(response);
+        } catch (NoSuchElementException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        } catch (IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
         }
     }
 

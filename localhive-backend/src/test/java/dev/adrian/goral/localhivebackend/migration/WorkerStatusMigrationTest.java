@@ -39,7 +39,7 @@ class WorkerStatusMigrationTest {
         Flyway flyway = flyway(null);
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("11");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("12");
 
         try (Connection connection = connection()) {
             assertWorkerState(connection, "pending-worker", "PENDING", "OFFLINE", "AVAILABLE");
