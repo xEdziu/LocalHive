@@ -245,6 +245,8 @@ M10 does not download, inspect, unpack, or scan the ZIP on Master during executi
 
 Physical artifact paths are not exposed.
 
+See [Simple Optimization Workload](simple-optimization-workload.md) for a Docker workload smoke recipe that uploads a workspace ZIP, runs `sh /workspace/optimize.sh`, and verifies output artifacts.
+
 ## Display Name Behavior
 
 An explicit nonblank `displayName` is trimmed and stored as `displayNameSnapshot`.

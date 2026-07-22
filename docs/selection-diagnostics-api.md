@@ -290,6 +290,8 @@ Diagnostics does not expose:
 
 Use diagnostics as a troubleshooting tool before create execution. Use execution APIs after work has been created.
 
+The [Simple Optimization Workload](simple-optimization-workload.md) recipe shows diagnostics for an `AUTO` Docker workload that uses a workspace artifact and uploads output artifacts.
+
 ## Future Extensions
 
 Future work may add:

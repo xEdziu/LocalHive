@@ -14,4 +14,5 @@ LocalHive Master is the central service for LocalHive worker registration, work 
 - [Execution display metadata](docs/execution-display-metadata.md)
 - [Output artifacts](docs/output-artifacts.md)
 - [Selection diagnostics API](docs/selection-diagnostics-api.md)
+- [Simple optimization workload](docs/simple-optimization-workload.md)
 - [Worker selection](docs/worker-selection.md)
