@@ -8,6 +8,8 @@ Agents may include a `capabilities` object in worker heartbeat requests. Master 
 
 Capabilities do not change worker heartbeat authentication, worker claim, lease, report, Docker runtime, workspace, output artifact, or storage behavior. They are an eligibility input for `AUTO` and `PREFER`; `REQUIRE` remains manual and ignores capabilities.
 
+Use [Selection Diagnostics API](selection-diagnostics-api.md) to debug capability mismatches that make workers ineligible for `AUTO` or `PREFER`.
+
 ## Heartbeat Payload
 
 The heartbeat request keeps the existing required fields and adds an optional `capabilities` field:

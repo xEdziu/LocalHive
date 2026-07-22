@@ -4,6 +4,8 @@ M11 extends `POST /api/admin/executions` with worker assignment modes. M13 makes
 
 Worker selection happens during the create execution request. Master selects at most one worker for one execution. This is not a background scheduler, periodic assignment process, queue worker, or multi-worker distributed execution. The Agent still receives work by claiming assigned executions through the existing worker API.
 
+Use [Selection Diagnostics API](selection-diagnostics-api.md) to inspect why current workers match or do not match a planned `AUTO`, `PREFER`, or `REQUIRE` request before creating an execution.
+
 ## Assignment Modes
 
 | Mode | Meaning |
@@ -309,6 +311,7 @@ Full request configuration and full capability payloads should not be expected i
 | --- | --- |
 | `GET /api/admin/work-definitions` | Choose a Work Definition and version. |
 | `POST /api/admin/executions` | Create one execution and assign it using `REQUIRE`, `AUTO`, or `PREFER`. |
+| `POST /api/admin/executions/selection-diagnostics` | Read-only diagnostics for worker selection decisions. |
 | `GET /api/admin/executions` | Monitor execution history. |
 | `GET /api/admin/executions/{executionId}` | Inspect one execution. |
 | `GET /api/admin/workers` | Inspect worker overview state. |

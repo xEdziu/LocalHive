@@ -6,6 +6,8 @@ Before M10, real smoke executions were created through dev-only smoke helpers. M
 
 The Agent does not receive work through this admin endpoint directly. It continues to claim assigned executions through the existing worker claim API. Dev-smoke endpoints still exist for local testing, but they are not the target path for a future Master frontend.
 
+Use [Selection Diagnostics API](selection-diagnostics-api.md) before creating an execution when an admin client needs to see why `AUTO`, `PREFER`, or `REQUIRE` would select or reject current workers.
+
 ## Endpoint
 
 ```http
@@ -285,6 +287,7 @@ The submitted configuration is stored internally for execution claim where neede
 | --- | --- |
 | `GET /api/admin/work-definitions` | Browse Work Definitions and latest version metadata. |
 | `GET /api/admin/work-definitions/{definitionId}` | Inspect one definition and its versions. |
+| `POST /api/admin/executions/selection-diagnostics` | Diagnose worker selection for a planned create request without side effects. |
 | `POST /api/admin/executions` | Create one execution and explicit worker assignment. |
 | `GET /api/admin/executions` | Monitor execution history. |
 | `GET /api/admin/executions/{executionId}` | Inspect one execution. |
