@@ -181,7 +181,7 @@ The section may contain:
 - `executors`,
 - Docker policy summary metadata.
 
-Capabilities are documented in [Agent Capabilities](agent-capabilities.md). They are observable in M12 and are not used by M11 worker selection yet.
+Capabilities are documented in [Agent Capabilities](agent-capabilities.md). Starting in M13, the latest snapshot is also used by [Worker Selection](worker-selection.md) for `AUTO` and `PREFER` eligibility. `REQUIRE` remains manual and ignores capabilities.
 
 ## Current Execution
 
@@ -215,7 +215,7 @@ Use the [Admin Execution API](admin-execution-api.md) for the full worker execut
 GET /api/admin/executions?workerId={workerId}&limit=50&offset=0
 ```
 
-Use the [Admin Create Execution API](admin-create-execution-api.md) when an admin client needs to create a one-off execution. M11 [Worker Selection](worker-selection.md) uses the worker status and resource fields from this API for `AUTO` and `PREFER` assignment modes.
+Use the [Admin Create Execution API](admin-create-execution-api.md) when an admin client needs to create a one-off execution. [Worker Selection](worker-selection.md) uses the worker status, resource fields, and latest capability snapshot for `AUTO` and `PREFER` assignment modes.
 
 ## Artifact Count
 
@@ -272,7 +272,7 @@ The worker detail response does not expose:
 
 The worker detail endpoint provides only a small execution preview. Execution list/detail and artifact endpoints remain the source for deeper execution and output file inspection.
 
-See [Worker Selection](worker-selection.md) for how `APPROVED`, `ONLINE`, `AVAILABLE`, `sharedRamMb`, `cpuCores`, and active execution state affect `AUTO` and `PREFER` assignment. M12 [Agent Capabilities](agent-capabilities.md) are currently displayed metadata only.
+See [Worker Selection](worker-selection.md) for how `APPROVED`, `ONLINE`, `AVAILABLE`, `sharedRamMb`, `cpuCores`, active execution state, and M12 [Agent Capabilities](agent-capabilities.md) affect `AUTO` and `PREFER` assignment.
 
 ## Current Limitations
 

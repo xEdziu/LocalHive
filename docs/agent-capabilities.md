@@ -1,12 +1,12 @@
 # Agent Capabilities
 
-M12 adds Agent capability reporting as safe operational metadata.
+M12 adds Agent capability reporting as safe operational metadata. M13 uses the latest stored snapshot as part of `AUTO` and `PREFER` worker selection eligibility.
 
 ## Purpose
 
-Agents may now include a `capabilities` object in worker heartbeat requests. Master treats this as the latest known snapshot from the Agent, stores one current snapshot per worker, and exposes the safe metadata through Admin Worker Detail.
+Agents may include a `capabilities` object in worker heartbeat requests. Master treats this as the latest known snapshot from the Agent, stores one current snapshot per worker, exposes the safe metadata through Admin Worker Detail, and uses it for M13 capability-aware worker selection.
 
-Capabilities are observable in M12. They do not affect M11 worker selection, scheduling, execution assignment, claim, lease, report, Docker runtime, workspace, output artifact, or storage behavior.
+Capabilities do not change worker heartbeat authentication, worker claim, lease, report, Docker runtime, workspace, output artifact, or storage behavior. They are an eligibility input for `AUTO` and `PREFER`; `REQUIRE` remains manual and ignores capabilities.
 
 ## Heartbeat Payload
 
@@ -48,7 +48,7 @@ Compatibility behavior:
 - A valid later heartbeat with `capabilities` replaces the previous snapshot for that worker.
 - Invalid capabilities are rejected before the snapshot is saved, so a bad report must not partially update a previous valid snapshot.
 
-Worker registration, claim, lease, and report endpoints are unchanged by M12.
+Worker registration, claim, lease, and report endpoints are unchanged by M12/M13 capability reporting and selection.
 
 ## Persistence
 
@@ -76,7 +76,7 @@ Persistence model:
 - no capability history table exists in M12,
 - V1-V10 migrations are unchanged.
 
-The stored snapshot is intended for admin visibility and future scheduling design. It does not contain physical paths, raw Agent config, credential backend details, task history, or secrets.
+The stored snapshot is intended for admin visibility and M13 automatic worker selection. It does not contain physical paths, raw Agent config, credential backend details, task history, or secrets.
 
 ## Admin Worker Detail
 
@@ -162,7 +162,7 @@ Capability snapshots and Admin Worker Detail capability metadata do not expose:
 
 ## Relation To Worker Selection
 
-M11 worker selection still uses existing worker state and resource fields:
+M13 worker selection still uses existing worker state and resource fields:
 
 - approval status,
 - connection status,
@@ -172,13 +172,24 @@ M11 worker selection still uses existing worker state and resource fields:
 - CPU cores,
 - GPU-required rejection.
 
-M12 capabilities are not used by selection or scheduling yet. A future stage may use capability metadata to improve worker eligibility, policy matching, and scoring. The Agent remains the final enforcement point for local Docker policy.
+For `AUTO` and `PREFER`, M13 adds capability fit:
+
+- latest stored capability snapshot must exist,
+- matching `executorId` is required,
+- matching `executorContractVersion` is required,
+- the matching executor must have `enabled == true`,
+- Docker workloads additionally require Docker summary, `docker.enabled == true`, an allowed image match, and optional Docker memory/CPU policy fit.
+
+Capability fit is an eligibility filter. It is not a scoring factor, and no capability TTL or staleness rule is added in M13.
+
+`REQUIRE` does not use capabilities. An admin can still assign an execution manually to an `APPROVED` worker without a capability snapshot.
+
+The Agent remains the final enforcement point for local Docker policy.
 
 ## Current Limitations
 
 - no capability history,
 - no scheduler or background assignment loop,
-- no selection based on reported capabilities,
 - no Docker policy synchronization from Agent to Master enforcement,
 - no GPU execution support,
 - no multi-worker execution,
@@ -190,8 +201,6 @@ M12 capabilities are not used by selection or scheduling yet. A future stage may
 
 Future work may add:
 
-- capability-aware worker selection,
-- policy-driven Docker eligibility,
 - richer executor metadata,
 - capability versioning,
 - cached Docker health reporting,
