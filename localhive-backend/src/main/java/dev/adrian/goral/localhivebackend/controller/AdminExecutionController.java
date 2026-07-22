@@ -5,8 +5,10 @@ import dev.adrian.goral.localhivebackend.dto.AdminCreateExecutionRequestDto;
 import dev.adrian.goral.localhivebackend.dto.AdminCreateExecutionResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionDetailResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionListResponseDto;
+import dev.adrian.goral.localhivebackend.dto.AdminSelectionDiagnosticsResponseDto;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionCreationService;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionQueryService;
+import dev.adrian.goral.localhivebackend.service.work.AdminSelectionDiagnosticsService;
 import dev.adrian.goral.localhivebackend.service.work.WorkerSelectionService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -34,6 +36,7 @@ public class AdminExecutionController {
 
     private final AdminExecutionQueryService queryService;
     private final AdminExecutionCreationService creationService;
+    private final AdminSelectionDiagnosticsService diagnosticsService;
 
     @PostMapping
     public ResponseEntity<AdminCreateExecutionResponseDto> createExecution(
@@ -43,6 +46,19 @@ public class AdminExecutionController {
             return ResponseEntity.status(HttpStatus.CREATED).body(creationService.createExecution(request));
         } catch (WorkerSelectionService.NoEligibleWorkerException e) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+        } catch (NoSuchElementException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
+
+    @PostMapping("/selection-diagnostics")
+    public ResponseEntity<AdminSelectionDiagnosticsResponseDto> selectionDiagnostics(
+            @RequestBody AdminCreateExecutionRequestDto request
+    ) {
+        try {
+            return ResponseEntity.ok(diagnosticsService.diagnose(request));
         } catch (NoSuchElementException e) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
         } catch (IllegalArgumentException | IllegalStateException e) {

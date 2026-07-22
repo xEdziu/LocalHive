@@ -44,6 +44,19 @@ public class AdminExecutionCreationService {
 
     @Transactional
     public AdminCreateExecutionResponseDto createExecution(AdminCreateExecutionRequestDto request) {
+        AdminExecutionRequestPlan plan = prepareExecutionRequest(request);
+        Worker worker = selectWorker(plan.assignmentMode(), plan.requestedWorkerId(), plan.selectionCriteria());
+        var execution = creationService.createOneOffExecution(new CreateOneOffExecutionCommand(
+                plan.definitionVersion().getId(),
+                plan.configurationOverrides(),
+                plan.resourceOverrides(),
+                request.displayName()
+        ));
+        ExecutionAssignment assignment = assignExecution(execution.getId(), worker.getId(), plan.assignmentMode());
+        return AdminCreateExecutionResponseDto.from(assignment);
+    }
+
+    AdminExecutionRequestPlan prepareExecutionRequest(AdminCreateExecutionRequestDto request) {
         if (request == null) {
             throw new IllegalArgumentException("request must not be null.");
         }
@@ -59,15 +72,15 @@ public class AdminExecutionCreationService {
         requireExecutableDefinitionVersion(definitionVersion);
 
         ExecutionConfiguration executionConfiguration = resolveConfiguration(definitionVersion, validRequest);
-        Worker worker = selectWorker(assignmentMode, requestedWorkerId, executionConfiguration.selectionCriteria());
-        var execution = creationService.createOneOffExecution(new CreateOneOffExecutionCommand(
-                definitionVersion.getId(),
+        return new AdminExecutionRequestPlan(
+                definitionVersion,
+                assignmentMode,
+                requestedWorkerId,
                 executionConfiguration.configurationOverrides(),
                 executionConfiguration.resourceOverrides(),
-                validRequest.displayName()
-        ));
-        ExecutionAssignment assignment = assignExecution(execution.getId(), worker.getId(), assignmentMode);
-        return AdminCreateExecutionResponseDto.from(assignment);
+                executionConfiguration.requestedResources(),
+                executionConfiguration.selectionCriteria()
+        );
     }
 
     private WorkDefinitionVersion findDefinitionVersion(UUID definitionVersionId) {

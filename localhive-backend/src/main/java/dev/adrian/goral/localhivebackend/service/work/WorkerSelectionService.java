@@ -15,12 +15,15 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -72,68 +75,116 @@ public class WorkerSelectionService {
     WorkerEligibilityResult evaluateEligibility(Worker worker,
                                                 WorkerSelectionCriteria selectionCriteria,
                                                 WorkerCapabilities capabilities) {
+        return WorkerEligibilityResult.from(evaluateRejectionReasons(
+                worker,
+                selectionCriteria,
+                capabilities,
+                true
+        ));
+    }
+
+    List<WorkerSelectionCandidate> evaluateDiagnosticCandidates(Collection<Worker> workers,
+                                                                WorkerSelectionCriteria selectionCriteria) {
+        if (workers == null || workers.isEmpty()) {
+            return List.of();
+        }
+
+        WorkerSelectionCriteria criteria = Objects.requireNonNull(
+                selectionCriteria,
+                "selectionCriteria must not be null."
+        );
+        Map<UUID, LocalDateTime> latestAssignedAtByWorkerId = latestAssignedAtByWorkerId(workers);
+        Map<UUID, WorkerCapabilities> capabilitiesByWorkerId = capabilitiesByWorkerId(workers);
+
+        return workers.stream()
+                .map(worker -> diagnosticCandidate(
+                        worker,
+                        criteria,
+                        capabilitiesByWorkerId.get(worker.getId()),
+                        latestAssignedAtByWorkerId.get(worker.getId())
+                ))
+                .sorted(WorkerSelectionService::compareDiagnosticCandidates)
+                .toList();
+    }
+
+    WorkerSelectionCandidate diagnosticCandidate(Worker worker,
+                                                 WorkerSelectionCriteria selectionCriteria,
+                                                 WorkerCapabilities capabilities,
+                                                 LocalDateTime latestAssignedAt) {
         Worker candidate = Objects.requireNonNull(worker, "worker must not be null.");
         WorkerSelectionCriteria criteria = Objects.requireNonNull(
                 selectionCriteria,
                 "selectionCriteria must not be null."
         );
         ResourceRequest resources = criteria.requestedResources();
+        List<WorkerRejectionReason> rejectionReasons = evaluateRejectionReasons(
+                candidate,
+                criteria,
+                capabilities,
+                true
+        );
 
-        if (candidate.getApprovalStatus() != WorkerApprovalStatus.APPROVED) {
-            return WorkerEligibilityResult.rejected(WorkerRejectionReason.NOT_APPROVED);
-        }
-        if (candidate.getConnectionStatus() != WorkerConnectionStatus.ONLINE) {
-            return WorkerEligibilityResult.rejected(WorkerRejectionReason.NOT_ONLINE);
-        }
-        if (candidate.getAvailabilityStatus() != WorkerAvailabilityStatus.AVAILABLE) {
-            return WorkerEligibilityResult.rejected(WorkerRejectionReason.NOT_AVAILABLE);
-        }
-        if (assignmentRepository.existsByWorkerAndExecution_StatusIn(candidate, ACTIVE_EXECUTION_STATUSES)) {
-            return WorkerEligibilityResult.rejected(WorkerRejectionReason.HAS_ACTIVE_EXECUTION);
-        }
-
-        WorkerRejectionReason resourceRejectionReason = resourceRejectionReason(candidate, resources);
-        if (resourceRejectionReason != null) {
-            return WorkerEligibilityResult.rejected(resourceRejectionReason);
-        }
-
-        WorkerRejectionReason capabilityRejectionReason = capabilityRejectionReason(capabilities, criteria);
-        if (capabilityRejectionReason != null) {
-            return WorkerEligibilityResult.rejected(capabilityRejectionReason);
-        }
-
-        return WorkerEligibilityResult.accepted();
+        return new WorkerSelectionCandidate(
+                candidate,
+                capabilities,
+                WorkerEligibilityResult.from(rejectionReasons),
+                rejectionReasons,
+                capabilityDiagnostics(capabilities, criteria),
+                memoryHeadroomMb(candidate, resources),
+                cpuHeadroom(candidate, resources),
+                latestAssignedAt
+        );
     }
 
-    private java.util.Optional<Worker> selectBestEligibleWorker(WorkerSelectionCriteria selectionCriteria) {
+    private List<WorkerRejectionReason> evaluateRejectionReasons(Worker worker,
+                                                                 WorkerSelectionCriteria selectionCriteria,
+                                                                 WorkerCapabilities capabilities,
+                                                                 boolean applyCapabilityReasons) {
+        Worker candidate = Objects.requireNonNull(worker, "worker must not be null.");
         WorkerSelectionCriteria criteria = Objects.requireNonNull(
                 selectionCriteria,
                 "selectionCriteria must not be null."
         );
         ResourceRequest resources = criteria.requestedResources();
+        List<WorkerRejectionReason> reasons = new ArrayList<>();
+
+        if (candidate.getApprovalStatus() != WorkerApprovalStatus.APPROVED) {
+            reasons.add(WorkerRejectionReason.NOT_APPROVED);
+        }
+        if (candidate.getConnectionStatus() != WorkerConnectionStatus.ONLINE) {
+            reasons.add(WorkerRejectionReason.NOT_ONLINE);
+        }
+        if (candidate.getAvailabilityStatus() != WorkerAvailabilityStatus.AVAILABLE) {
+            reasons.add(WorkerRejectionReason.NOT_AVAILABLE);
+        }
+        if (assignmentRepository.existsByWorkerAndExecution_StatusIn(candidate, ACTIVE_EXECUTION_STATUSES)) {
+            reasons.add(WorkerRejectionReason.HAS_ACTIVE_EXECUTION);
+        }
+
+        reasons.addAll(resourceRejectionReasons(candidate, resources));
+
+        if (applyCapabilityReasons) {
+            reasons.addAll(capabilityRejectionReasons(capabilities, criteria));
+        }
+
+        return List.copyOf(reasons);
+    }
+
+    private Optional<Worker> selectBestEligibleWorker(WorkerSelectionCriteria selectionCriteria) {
+        WorkerSelectionCriteria criteria = Objects.requireNonNull(
+                selectionCriteria,
+                "selectionCriteria must not be null."
+        );
         var candidates = workerRepository.findWorkerSelectionCandidates(
                 WorkerApprovalStatus.APPROVED,
                 WorkerConnectionStatus.ONLINE,
                 WorkerAvailabilityStatus.AVAILABLE,
                 ACTIVE_EXECUTION_STATUSES
         );
-        Map<UUID, LocalDateTime> latestAssignedAtByWorkerId = latestAssignedAtByWorkerId(candidates);
-        Map<UUID, WorkerCapabilities> capabilitiesByWorkerId = capabilitiesByWorkerId(candidates);
 
-        return candidates.stream()
-                .filter(worker -> resourceRejectionReason(worker, resources) == null)
-                .filter(worker -> capabilityRejectionReason(
-                        capabilitiesByWorkerId.get(worker.getId()),
-                        criteria
-                ) == null)
-                .map(worker -> new WorkerCandidate(
-                        worker,
-                        memoryHeadroomMb(worker, resources),
-                        cpuHeadroom(worker, resources),
-                        latestAssignedAtByWorkerId.get(worker.getId())
-                ))
-                .sorted(CANDIDATE_ORDER)
-                .map(WorkerCandidate::worker)
+        return evaluateDiagnosticCandidates(candidates, criteria).stream()
+                .filter(candidate -> candidate.eligibilityResult().eligible())
+                .map(WorkerSelectionCandidate::worker)
                 .findFirst();
     }
 
@@ -164,16 +215,19 @@ public class WorkerSelectionService {
                 ));
     }
 
-    private static WorkerRejectionReason resourceRejectionReason(Worker worker, ResourceRequest requestedResources) {
+    private static List<WorkerRejectionReason> resourceRejectionReasons(Worker worker,
+                                                                        ResourceRequest requestedResources) {
+        List<WorkerRejectionReason> reasons = new ArrayList<>();
+
         if (requestedResources.isGpuRequired()) {
-            return WorkerRejectionReason.GPU_REQUIRED_UNSUPPORTED;
+            reasons.add(WorkerRejectionReason.GPU_REQUIRED_UNSUPPORTED);
         }
 
         int requiredMemoryMb = requestedResources.getRequiredRamMb();
         if (requiredMemoryMb > 0) {
             Integer sharedRamMb = worker.getSharedRamMb();
             if (sharedRamMb == null || sharedRamMb <= 0 || sharedRamMb < requiredMemoryMb) {
-                return WorkerRejectionReason.INSUFFICIENT_MEMORY;
+                reasons.add(WorkerRejectionReason.INSUFFICIENT_MEMORY);
             }
         }
 
@@ -181,32 +235,48 @@ public class WorkerSelectionService {
         if (requiredCpuCores > 0) {
             Integer cpuCores = worker.getCpuCores();
             if (cpuCores == null || cpuCores <= 0 || cpuCores < requiredCpuCores) {
-                return WorkerRejectionReason.INSUFFICIENT_CPU;
+                reasons.add(WorkerRejectionReason.INSUFFICIENT_CPU);
             }
         }
 
-        return null;
+        return List.copyOf(reasons);
     }
 
-    private static WorkerRejectionReason capabilityRejectionReason(WorkerCapabilities capabilities,
-                                                                   WorkerSelectionCriteria criteria) {
+    private static List<WorkerRejectionReason> capabilityRejectionReasons(WorkerCapabilities capabilities,
+                                                                          WorkerSelectionCriteria criteria) {
+        List<WorkerRejectionReason> reasons = new ArrayList<>();
+        CapabilityDiagnostics diagnostics = capabilityDiagnostics(capabilities, criteria);
+
         if (capabilities == null) {
-            return WorkerRejectionReason.MISSING_CAPABILITIES;
+            return List.of(WorkerRejectionReason.MISSING_CAPABILITIES);
         }
 
-        JsonNode executor = matchingExecutor(capabilities.getExecutors(), criteria);
-        if (executor == null) {
-            return WorkerRejectionReason.EXECUTOR_NOT_SUPPORTED;
+        if (!diagnostics.executorMatched()) {
+            return List.of(WorkerRejectionReason.EXECUTOR_NOT_SUPPORTED);
         }
-        if (!executor.path("enabled").asBoolean(false)) {
-            return WorkerRejectionReason.EXECUTOR_DISABLED;
+        if (!diagnostics.executorEnabled()) {
+            return List.of(WorkerRejectionReason.EXECUTOR_DISABLED);
         }
 
         if (DOCKER_EXECUTOR_ID.equals(criteria.executorId())) {
-            return dockerCapabilityRejectionReason(capabilities, criteria);
+            if (!diagnostics.dockerReported()) {
+                return List.of(WorkerRejectionReason.DOCKER_CAPABILITY_MISSING);
+            }
+            if (!diagnostics.dockerEnabled()) {
+                reasons.add(WorkerRejectionReason.DOCKER_DISABLED);
+            }
+            if (!diagnostics.imageAllowed()) {
+                reasons.add(WorkerRejectionReason.DOCKER_IMAGE_NOT_ALLOWED);
+            }
+            if (!diagnostics.policyMemoryFits()) {
+                reasons.add(WorkerRejectionReason.DOCKER_POLICY_MEMORY_EXCEEDED);
+            }
+            if (!diagnostics.policyCpuFits()) {
+                reasons.add(WorkerRejectionReason.DOCKER_POLICY_CPU_EXCEEDED);
+            }
         }
 
-        return null;
+        return List.copyOf(reasons);
     }
 
     private static JsonNode matchingExecutor(JsonNode executors, WorkerSelectionCriteria criteria) {
@@ -224,27 +294,36 @@ public class WorkerSelectionService {
         return null;
     }
 
-    private static WorkerRejectionReason dockerCapabilityRejectionReason(WorkerCapabilities capabilities,
-                                                                         WorkerSelectionCriteria criteria) {
-        if (isDockerSummaryMissing(capabilities)) {
-            return WorkerRejectionReason.DOCKER_CAPABILITY_MISSING;
-        }
-        if (!Boolean.TRUE.equals(capabilities.getDockerEnabled())) {
-            return WorkerRejectionReason.DOCKER_DISABLED;
-        }
-        if (!containsText(capabilities.getDockerAllowedImages(), criteria.dockerImage())) {
-            return WorkerRejectionReason.DOCKER_IMAGE_NOT_ALLOWED;
-        }
-        Integer maxMemoryMb = capabilities.getDockerMaxMemoryMb();
-        if (maxMemoryMb != null && criteria.requestedResources().getRequiredRamMb() > maxMemoryMb) {
-            return WorkerRejectionReason.DOCKER_POLICY_MEMORY_EXCEEDED;
-        }
-        Integer maxCpuCores = capabilities.getDockerMaxCpuCores();
-        if (maxCpuCores != null && criteria.requestedResources().getRequiredCpuCores() > maxCpuCores) {
-            return WorkerRejectionReason.DOCKER_POLICY_CPU_EXCEEDED;
+    private static CapabilityDiagnostics capabilityDiagnostics(WorkerCapabilities capabilities,
+                                                              WorkerSelectionCriteria criteria) {
+        if (capabilities == null) {
+            return CapabilityDiagnostics.empty();
         }
 
-        return null;
+        JsonNode executor = matchingExecutor(capabilities.getExecutors(), criteria);
+        boolean executorMatched = executor != null;
+        boolean executorEnabled = executorMatched && executor.path("enabled").asBoolean(false);
+        boolean dockerReported = !isDockerSummaryMissing(capabilities);
+        boolean dockerEnabled = Boolean.TRUE.equals(capabilities.getDockerEnabled());
+        boolean imageAllowed = containsText(capabilities.getDockerAllowedImages(), criteria.dockerImage());
+
+        Integer maxMemoryMb = capabilities.getDockerMaxMemoryMb();
+        boolean policyMemoryFits = dockerReported
+                && (maxMemoryMb == null || criteria.requestedResources().getRequiredRamMb() <= maxMemoryMb);
+        Integer maxCpuCores = capabilities.getDockerMaxCpuCores();
+        boolean policyCpuFits = dockerReported
+                && (maxCpuCores == null || criteria.requestedResources().getRequiredCpuCores() <= maxCpuCores);
+
+        return new CapabilityDiagnostics(
+                true,
+                executorMatched,
+                executorEnabled,
+                dockerReported,
+                dockerEnabled,
+                imageAllowed,
+                policyMemoryFits,
+                policyCpuFits
+        );
     }
 
     private static boolean isDockerSummaryMissing(WorkerCapabilities capabilities) {
@@ -279,6 +358,24 @@ public class WorkerSelectionService {
         return cpuCores - requestedResources.getRequiredCpuCores();
     }
 
+    private static int compareDiagnosticCandidates(WorkerSelectionCandidate first,
+                                                   WorkerSelectionCandidate second) {
+        if (first.eligibilityResult().eligible() && second.eligibilityResult().eligible()) {
+            return CANDIDATE_ORDER.compare(first.toWorkerCandidate(), second.toWorkerCandidate());
+        }
+        if (first.eligibilityResult().eligible() != second.eligibilityResult().eligible()) {
+            return Boolean.compare(second.eligibilityResult().eligible(), first.eligibilityResult().eligible());
+        }
+
+        int hostnameResult = Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)
+                .compare(first.worker().getHostname(), second.worker().getHostname());
+        if (hostnameResult != 0) {
+            return hostnameResult;
+        }
+
+        return first.worker().getId().compareTo(second.worker().getId());
+    }
+
     public static class NoEligibleWorkerException extends RuntimeException {
 
         public NoEligibleWorkerException() {
@@ -295,24 +392,78 @@ public class WorkerSelectionService {
         static WorkerEligibilityResult rejected(WorkerRejectionReason reason) {
             return new WorkerEligibilityResult(false, Objects.requireNonNull(reason, "reason must not be null."));
         }
+
+        static WorkerEligibilityResult from(List<WorkerRejectionReason> reasons) {
+            if (reasons == null || reasons.isEmpty()) {
+                return accepted();
+            }
+
+            return rejected(reasons.get(0));
+        }
     }
 
     enum WorkerRejectionReason {
-        NOT_APPROVED,
-        NOT_ONLINE,
-        NOT_AVAILABLE,
-        HAS_ACTIVE_EXECUTION,
-        INSUFFICIENT_MEMORY,
-        INSUFFICIENT_CPU,
-        GPU_REQUIRED_UNSUPPORTED,
-        MISSING_CAPABILITIES,
-        EXECUTOR_NOT_SUPPORTED,
-        EXECUTOR_DISABLED,
-        DOCKER_CAPABILITY_MISSING,
-        DOCKER_DISABLED,
-        DOCKER_IMAGE_NOT_ALLOWED,
-        DOCKER_POLICY_MEMORY_EXCEEDED,
-        DOCKER_POLICY_CPU_EXCEEDED
+        NOT_APPROVED("WORKER_NOT_APPROVED"),
+        NOT_ONLINE("WORKER_OFFLINE"),
+        NOT_AVAILABLE("WORKER_NOT_AVAILABLE"),
+        HAS_ACTIVE_EXECUTION("WORKER_HAS_ACTIVE_EXECUTION"),
+        INSUFFICIENT_MEMORY("WORKER_MEMORY_TOO_LOW"),
+        INSUFFICIENT_CPU("WORKER_CPU_TOO_LOW"),
+        GPU_REQUIRED_UNSUPPORTED("GPU_UNSUPPORTED"),
+        MISSING_CAPABILITIES("MISSING_CAPABILITIES"),
+        EXECUTOR_NOT_SUPPORTED("EXECUTOR_NOT_SUPPORTED"),
+        EXECUTOR_DISABLED("EXECUTOR_DISABLED"),
+        DOCKER_CAPABILITY_MISSING("DOCKER_CAPABILITY_MISSING"),
+        DOCKER_DISABLED("DOCKER_DISABLED"),
+        DOCKER_IMAGE_NOT_ALLOWED("DOCKER_IMAGE_NOT_ALLOWED"),
+        DOCKER_POLICY_MEMORY_EXCEEDED("DOCKER_POLICY_MEMORY_EXCEEDED"),
+        DOCKER_POLICY_CPU_EXCEEDED("DOCKER_POLICY_CPU_EXCEEDED");
+
+        private final String code;
+
+        WorkerRejectionReason(String code) {
+            this.code = code;
+        }
+
+        String code() {
+            return code;
+        }
+    }
+
+    record WorkerSelectionCandidate(
+            Worker worker,
+            WorkerCapabilities capabilities,
+            WorkerEligibilityResult eligibilityResult,
+            List<WorkerRejectionReason> rejectionReasons,
+            CapabilityDiagnostics capabilityDiagnostics,
+            int memoryHeadroomMb,
+            int cpuHeadroom,
+            LocalDateTime latestAssignedAt
+    ) {
+
+        WorkerSelectionCandidate {
+            rejectionReasons = rejectionReasons == null ? List.of() : List.copyOf(rejectionReasons);
+        }
+
+        private WorkerCandidate toWorkerCandidate() {
+            return new WorkerCandidate(worker, memoryHeadroomMb, cpuHeadroom, latestAssignedAt);
+        }
+    }
+
+    record CapabilityDiagnostics(
+            boolean reported,
+            boolean executorMatched,
+            boolean executorEnabled,
+            boolean dockerReported,
+            boolean dockerEnabled,
+            boolean imageAllowed,
+            boolean policyMemoryFits,
+            boolean policyCpuFits
+    ) {
+
+        static CapabilityDiagnostics empty() {
+            return new CapabilityDiagnostics(false, false, false, false, false, false, false, false);
+        }
     }
 
     private record WorkerCandidate(
