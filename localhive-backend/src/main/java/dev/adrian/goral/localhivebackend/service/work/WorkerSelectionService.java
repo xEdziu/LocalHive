@@ -1,11 +1,14 @@
 package dev.adrian.goral.localhivebackend.service.work;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import dev.adrian.goral.localhivebackend.domain.Worker;
+import dev.adrian.goral.localhivebackend.domain.WorkerCapabilities;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
 import dev.adrian.goral.localhivebackend.domain.work.ResourceRequest;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
+import dev.adrian.goral.localhivebackend.repository.WorkerCapabilitiesRepository;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.repository.work.ExecutionAssignmentRepository;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +30,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class WorkerSelectionService {
 
+    private static final String DOCKER_EXECUTOR_ID = "localhive.docker.workload";
+
     private static final Set<WorkExecutionStatus> ACTIVE_EXECUTION_STATUSES = EnumSet.of(
             WorkExecutionStatus.ASSIGNED,
             WorkExecutionStatus.CLAIMED,
@@ -42,32 +47,37 @@ public class WorkerSelectionService {
 
     private final WorkerRepository workerRepository;
     private final ExecutionAssignmentRepository assignmentRepository;
+    private final WorkerCapabilitiesRepository workerCapabilitiesRepository;
 
-    public Worker selectAuto(ResourceRequest requestedResources) {
-        return selectBestEligibleWorker(requestedResources)
+    public Worker selectAuto(WorkerSelectionCriteria selectionCriteria) {
+        return selectBestEligibleWorker(selectionCriteria)
                 .orElseThrow(NoEligibleWorkerException::new);
     }
 
-    public Worker selectPreferred(UUID preferredWorkerId, ResourceRequest requestedResources) {
+    public Worker selectPreferred(UUID preferredWorkerId, WorkerSelectionCriteria selectionCriteria) {
         if (preferredWorkerId == null) {
             throw new IllegalArgumentException("workerId is required for PREFER assignmentMode.");
         }
 
         Worker preferredWorker = workerRepository.findById(preferredWorkerId)
                 .orElseThrow(() -> new NoSuchElementException("Worker not found: " + preferredWorkerId));
-        if (evaluateEligibility(preferredWorker, requestedResources).eligible()) {
+        WorkerCapabilities capabilities = workerCapabilitiesRepository.findById(preferredWorker.getId()).orElse(null);
+        if (evaluateEligibility(preferredWorker, selectionCriteria, capabilities).eligible()) {
             return preferredWorker;
         }
 
-        return selectAuto(requestedResources);
+        return selectAuto(selectionCriteria);
     }
 
-    WorkerEligibilityResult evaluateEligibility(Worker worker, ResourceRequest requestedResources) {
+    WorkerEligibilityResult evaluateEligibility(Worker worker,
+                                                WorkerSelectionCriteria selectionCriteria,
+                                                WorkerCapabilities capabilities) {
         Worker candidate = Objects.requireNonNull(worker, "worker must not be null.");
-        ResourceRequest resources = Objects.requireNonNull(
-                requestedResources,
-                "requestedResources must not be null."
+        WorkerSelectionCriteria criteria = Objects.requireNonNull(
+                selectionCriteria,
+                "selectionCriteria must not be null."
         );
+        ResourceRequest resources = criteria.requestedResources();
 
         if (candidate.getApprovalStatus() != WorkerApprovalStatus.APPROVED) {
             return WorkerEligibilityResult.rejected(WorkerRejectionReason.NOT_APPROVED);
@@ -87,14 +97,20 @@ public class WorkerSelectionService {
             return WorkerEligibilityResult.rejected(resourceRejectionReason);
         }
 
+        WorkerRejectionReason capabilityRejectionReason = capabilityRejectionReason(capabilities, criteria);
+        if (capabilityRejectionReason != null) {
+            return WorkerEligibilityResult.rejected(capabilityRejectionReason);
+        }
+
         return WorkerEligibilityResult.accepted();
     }
 
-    private java.util.Optional<Worker> selectBestEligibleWorker(ResourceRequest requestedResources) {
-        ResourceRequest resources = Objects.requireNonNull(
-                requestedResources,
-                "requestedResources must not be null."
+    private java.util.Optional<Worker> selectBestEligibleWorker(WorkerSelectionCriteria selectionCriteria) {
+        WorkerSelectionCriteria criteria = Objects.requireNonNull(
+                selectionCriteria,
+                "selectionCriteria must not be null."
         );
+        ResourceRequest resources = criteria.requestedResources();
         var candidates = workerRepository.findWorkerSelectionCandidates(
                 WorkerApprovalStatus.APPROVED,
                 WorkerConnectionStatus.ONLINE,
@@ -102,9 +118,14 @@ public class WorkerSelectionService {
                 ACTIVE_EXECUTION_STATUSES
         );
         Map<UUID, LocalDateTime> latestAssignedAtByWorkerId = latestAssignedAtByWorkerId(candidates);
+        Map<UUID, WorkerCapabilities> capabilitiesByWorkerId = capabilitiesByWorkerId(candidates);
 
         return candidates.stream()
                 .filter(worker -> resourceRejectionReason(worker, resources) == null)
+                .filter(worker -> capabilityRejectionReason(
+                        capabilitiesByWorkerId.get(worker.getId()),
+                        criteria
+                ) == null)
                 .map(worker -> new WorkerCandidate(
                         worker,
                         memoryHeadroomMb(worker, resources),
@@ -114,6 +135,18 @@ public class WorkerSelectionService {
                 .sorted(CANDIDATE_ORDER)
                 .map(WorkerCandidate::worker)
                 .findFirst();
+    }
+
+    private Map<UUID, WorkerCapabilities> capabilitiesByWorkerId(Collection<Worker> workers) {
+        if (workers.isEmpty()) {
+            return Map.of();
+        }
+
+        Set<UUID> workerIds = workers.stream()
+                .map(Worker::getId)
+                .collect(Collectors.toSet());
+        return workerCapabilitiesRepository.findAllById(workerIds).stream()
+                .collect(Collectors.toMap(WorkerCapabilities::getWorkerId, Function.identity()));
     }
 
     private Map<UUID, LocalDateTime> latestAssignedAtByWorkerId(Collection<Worker> workers) {
@@ -155,6 +188,87 @@ public class WorkerSelectionService {
         return null;
     }
 
+    private static WorkerRejectionReason capabilityRejectionReason(WorkerCapabilities capabilities,
+                                                                   WorkerSelectionCriteria criteria) {
+        if (capabilities == null) {
+            return WorkerRejectionReason.MISSING_CAPABILITIES;
+        }
+
+        JsonNode executor = matchingExecutor(capabilities.getExecutors(), criteria);
+        if (executor == null) {
+            return WorkerRejectionReason.EXECUTOR_NOT_SUPPORTED;
+        }
+        if (!executor.path("enabled").asBoolean(false)) {
+            return WorkerRejectionReason.EXECUTOR_DISABLED;
+        }
+
+        if (DOCKER_EXECUTOR_ID.equals(criteria.executorId())) {
+            return dockerCapabilityRejectionReason(capabilities, criteria);
+        }
+
+        return null;
+    }
+
+    private static JsonNode matchingExecutor(JsonNode executors, WorkerSelectionCriteria criteria) {
+        if (executors == null || !executors.isArray()) {
+            return null;
+        }
+
+        for (JsonNode executor : executors) {
+            if (criteria.executorId().equals(executor.path("executorId").asText(null))
+                    && criteria.executorContractVersion() == executor.path("executorContractVersion").asInt(-1)) {
+                return executor;
+            }
+        }
+
+        return null;
+    }
+
+    private static WorkerRejectionReason dockerCapabilityRejectionReason(WorkerCapabilities capabilities,
+                                                                         WorkerSelectionCriteria criteria) {
+        if (isDockerSummaryMissing(capabilities)) {
+            return WorkerRejectionReason.DOCKER_CAPABILITY_MISSING;
+        }
+        if (!Boolean.TRUE.equals(capabilities.getDockerEnabled())) {
+            return WorkerRejectionReason.DOCKER_DISABLED;
+        }
+        if (!containsText(capabilities.getDockerAllowedImages(), criteria.dockerImage())) {
+            return WorkerRejectionReason.DOCKER_IMAGE_NOT_ALLOWED;
+        }
+        Integer maxMemoryMb = capabilities.getDockerMaxMemoryMb();
+        if (maxMemoryMb != null && criteria.requestedResources().getRequiredRamMb() > maxMemoryMb) {
+            return WorkerRejectionReason.DOCKER_POLICY_MEMORY_EXCEEDED;
+        }
+        Integer maxCpuCores = capabilities.getDockerMaxCpuCores();
+        if (maxCpuCores != null && criteria.requestedResources().getRequiredCpuCores() > maxCpuCores) {
+            return WorkerRejectionReason.DOCKER_POLICY_CPU_EXCEEDED;
+        }
+
+        return null;
+    }
+
+    private static boolean isDockerSummaryMissing(WorkerCapabilities capabilities) {
+        return capabilities.getDockerEnabled() == null
+                && capabilities.getDockerAllowedImages() == null
+                && capabilities.getDockerMaxMemoryMb() == null
+                && capabilities.getDockerMaxCpuCores() == null
+                && capabilities.getDockerGpuAllowed() == null;
+    }
+
+    private static boolean containsText(JsonNode values, String expectedValue) {
+        if (expectedValue == null || values == null || !values.isArray()) {
+            return false;
+        }
+
+        for (JsonNode value : values) {
+            if (value.isTextual() && expectedValue.equals(value.asText())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static int memoryHeadroomMb(Worker worker, ResourceRequest requestedResources) {
         int sharedRamMb = worker.getSharedRamMb() == null ? 0 : worker.getSharedRamMb();
         return sharedRamMb - requestedResources.getRequiredRamMb();
@@ -190,7 +304,15 @@ public class WorkerSelectionService {
         HAS_ACTIVE_EXECUTION,
         INSUFFICIENT_MEMORY,
         INSUFFICIENT_CPU,
-        GPU_REQUIRED_UNSUPPORTED
+        GPU_REQUIRED_UNSUPPORTED,
+        MISSING_CAPABILITIES,
+        EXECUTOR_NOT_SUPPORTED,
+        EXECUTOR_DISABLED,
+        DOCKER_CAPABILITY_MISSING,
+        DOCKER_DISABLED,
+        DOCKER_IMAGE_NOT_ALLOWED,
+        DOCKER_POLICY_MEMORY_EXCEEDED,
+        DOCKER_POLICY_CPU_EXCEEDED
     }
 
     private record WorkerCandidate(

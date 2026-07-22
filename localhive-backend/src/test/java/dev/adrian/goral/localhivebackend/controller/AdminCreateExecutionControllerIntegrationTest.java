@@ -1,11 +1,13 @@
 package dev.adrian.goral.localhivebackend.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jayway.jsonpath.JsonPath;
 import dev.adrian.goral.localhivebackend.domain.User;
 import dev.adrian.goral.localhivebackend.domain.Worker;
+import dev.adrian.goral.localhivebackend.domain.WorkerCapabilities;
 import dev.adrian.goral.localhivebackend.domain.artifact.Artifact;
 import dev.adrian.goral.localhivebackend.domain.artifact.ArtifactKind;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
@@ -20,6 +22,7 @@ import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionAssignmentMo
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
 import dev.adrian.goral.localhivebackend.repository.UserRepository;
+import dev.adrian.goral.localhivebackend.repository.WorkerCapabilitiesRepository;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.repository.artifact.ArtifactRepository;
 import dev.adrian.goral.localhivebackend.repository.artifact.ExecutionArtifactRepository;
@@ -52,6 +55,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -122,6 +126,9 @@ class AdminCreateExecutionControllerIntegrationTest {
     private WorkerRepository workerRepository;
 
     @Autowired
+    private WorkerCapabilitiesRepository workerCapabilitiesRepository;
+
+    @Autowired
     private UserRepository userRepository;
 
     private User adminUser;
@@ -136,6 +143,7 @@ class AdminCreateExecutionControllerIntegrationTest {
         instanceRepository.deleteAll();
         versionRepository.deleteAll();
         definitionRepository.deleteAll();
+        workerCapabilitiesRepository.deleteAll();
         workerRepository.deleteAll();
         userRepository.deleteAll();
 
@@ -362,6 +370,45 @@ class AdminCreateExecutionControllerIntegrationTest {
     }
 
     @Test
+    void shouldKeepRequireAssignmentIndependentFromWorkerCapabilities() throws Exception {
+        WorkDefinitionVersion noOpVersion = noOpVersion();
+        WorkDefinitionVersion dockerVersion = dockerVersion();
+        Worker noCapabilitiesWorker = createApprovedWorker("require-no-caps");
+        Worker missingNoOpCapabilityWorker = createApprovedWorker("require-missing-no-op");
+        Worker dockerDisabledWorker = createApprovedWorker("require-docker-disabled");
+        storeDockerCapabilities(missingNoOpCapabilityWorker, true, true, List.of("alpine:3.20"), 4096, 8);
+        storeDockerCapabilities(dockerDisabledWorker, true, false, List.of("alpine:3.20"), 4096, 8);
+
+        mockMvc.perform(adminCreate(noOpCreateRequest(
+                        noOpVersion.getId(),
+                        noCapabilitiesWorker.getId(),
+                        "Require without capabilities"
+                )))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(noCapabilitiesWorker.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("REQUIRE"));
+
+        mockMvc.perform(adminCreate(noOpCreateRequest(
+                        noOpVersion.getId(),
+                        missingNoOpCapabilityWorker.getId(),
+                        "Require missing executor"
+                )))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(missingNoOpCapabilityWorker.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("REQUIRE"));
+
+        mockMvc.perform(adminCreate(dockerCreateRequest(
+                        dockerVersion.getId(),
+                        dockerDisabledWorker.getId(),
+                        "Require Docker disabled",
+                        "echo require"
+                )))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(dockerDisabledWorker.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("REQUIRE"));
+    }
+
+    @Test
     void shouldAutoSelectEligibleWorkerAndAllowClaim() throws Exception {
         WorkDefinitionVersion version = noOpVersion();
         createWorker(
@@ -388,6 +435,7 @@ class AdminCreateExecutionControllerIntegrationTest {
                 WorkerConnectionStatus.ONLINE,
                 WorkerAvailabilityStatus.AVAILABLE
         );
+        storeNoOpCapabilities(selectedWorker.worker());
 
         String response = mockMvc.perform(adminCreate(noOpAutoCreateRequest(version.getId(), "Auto NO_OP")))
                 .andExpect(status().isCreated())
@@ -413,6 +461,23 @@ class AdminCreateExecutionControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.executionId").value(executionId.toString()))
                 .andExpect(jsonPath("$.displayName").value("Auto NO_OP"));
+    }
+
+    @Test
+    void shouldAutoSelectOnlyMatchingEnabledNoOpCapability() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        createApprovedWorker("auto-no-capabilities");
+        Worker missingExecutor = createApprovedWorker("auto-missing-executor");
+        Worker disabledExecutor = createApprovedWorker("auto-disabled-executor");
+        Worker selectedWorker = createApprovedWorker("auto-no-op-capability");
+        storeDockerCapabilities(missingExecutor, true, true, List.of("alpine:3.20"), 4096, 8);
+        storeNoOpCapabilities(disabledExecutor, false);
+        storeNoOpCapabilities(selectedWorker);
+
+        mockMvc.perform(adminCreate(noOpAutoCreateRequest(version.getId(), "Capability NO_OP")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(selectedWorker.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("AUTO"));
     }
 
     @Test
@@ -448,12 +513,28 @@ class AdminCreateExecutionControllerIntegrationTest {
     }
 
     @Test
+    void shouldRejectAutoWhenOtherwiseEligibleWorkerHasNoMatchingCapabilities() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        Worker missingCapabilities = createApprovedWorker("auto-no-caps-conflict");
+        Worker disabledExecutor = createApprovedWorker("auto-disabled-caps-conflict");
+        storeNoOpCapabilities(disabledExecutor, false);
+
+        expectConflict(noOpAutoCreateRequest(version.getId(), "No matching capabilities"));
+
+        assertThat(workerRepository.findById(missingCapabilities.getId())).isPresent();
+    }
+
+    @Test
     void shouldAutoIgnoreActiveExecutionsAndAllowTerminalHistory() throws Exception {
         WorkDefinitionVersion version = noOpVersion();
         Worker assignedWorker = createApprovedWorker("auto-active-assigned");
         Worker claimedWorker = createApprovedWorker("auto-active-claimed");
         Worker runningWorker = createApprovedWorker("auto-active-running");
         Worker terminalWorker = createApprovedWorker("auto-terminal-history");
+        storeNoOpCapabilities(assignedWorker);
+        storeNoOpCapabilities(claimedWorker);
+        storeNoOpCapabilities(runningWorker);
+        storeNoOpCapabilities(terminalWorker);
         createAssignedExecution(version, assignedWorker, WorkExecutionStatus.ASSIGNED, BASE_TIME.plusMinutes(1));
         createAssignedExecution(version, claimedWorker, WorkExecutionStatus.CLAIMED, BASE_TIME.plusMinutes(2));
         createAssignedExecution(version, runningWorker, WorkExecutionStatus.RUNNING, BASE_TIME.plusMinutes(3));
@@ -469,6 +550,7 @@ class AdminCreateExecutionControllerIntegrationTest {
     void shouldAutoAllowWorkerWithFailedExecutionHistory() throws Exception {
         WorkDefinitionVersion version = noOpVersion();
         Worker failedHistoryWorker = createApprovedWorker("auto-failed-history");
+        storeNoOpCapabilities(failedHistoryWorker);
         createAssignedExecution(version, failedHistoryWorker, WorkExecutionStatus.FAILED, BASE_TIME.plusMinutes(1));
 
         mockMvc.perform(adminCreate(noOpAutoCreateRequest(version.getId(), "Failed history allowed")))
@@ -497,6 +579,8 @@ class AdminCreateExecutionControllerIntegrationTest {
                 8192,
                 16
         );
+        storeNoOpCapabilities(lowerScorePreferred);
+        storeNoOpCapabilities(higherScoreWorker);
 
         mockMvc.perform(adminCreate(noOpPreferCreateRequest(
                         noOpVersion.getId(),
@@ -554,6 +638,8 @@ class AdminCreateExecutionControllerIntegrationTest {
                 512,
                 4
         );
+        storeDockerCapabilities(lowResourcePreferred, true, true, List.of("alpine:3.20"), 4096, 8);
+        storeDockerCapabilities(resourceFallback, true, true, List.of("alpine:3.20"), 4096, 8);
         mockMvc.perform(adminCreate(dockerCreateRequestWithMode(
                         dockerVersion.getId(),
                         lowResourcePreferred.getId(),
@@ -565,6 +651,83 @@ class AdminCreateExecutionControllerIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.assignment.workerId").value(resourceFallback.getId().toString()))
                 .andExpect(jsonPath("$.assignment.mode").value("PREFER"));
+    }
+
+    @Test
+    void shouldPreferFallbackWhenCapabilitiesDoNotFitAndConflictWithoutFallback() throws Exception {
+        WorkDefinitionVersion noOpVersion = noOpVersion();
+        WorkDefinitionVersion dockerVersion = dockerVersion();
+
+        assertPreferFallsBack(
+                noOpVersion,
+                createApprovedWorker("prefer-no-caps"),
+                createApprovedWorker("prefer-no-caps-fallback"),
+                "Fallback from missing capabilities"
+        );
+
+        Worker disabledNoOpPreferred = createApprovedWorker("prefer-disabled-no-op");
+        storeNoOpCapabilities(disabledNoOpPreferred, false);
+        assertPreferFallsBack(
+                noOpVersion,
+                disabledNoOpPreferred,
+                createApprovedWorker("prefer-disabled-no-op-fallback"),
+                "Fallback from disabled no-op"
+        );
+
+        Worker imageNotAllowedPreferred = createApprovedWorker("prefer-docker-image");
+        Worker imageFallback = createApprovedWorker("prefer-docker-image-fallback");
+        storeDockerCapabilities(imageNotAllowedPreferred, true, true, List.of("ubuntu:24.04"), 4096, 8);
+        storeDockerCapabilities(imageFallback, true, true, List.of("alpine:3.20"), 4096, 8);
+        mockMvc.perform(adminCreate(dockerCreateRequestWithMode(
+                        dockerVersion.getId(),
+                        imageNotAllowedPreferred.getId(),
+                        "PREFER",
+                        "Fallback from Docker image",
+                        128,
+                        1
+                )))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(imageFallback.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("PREFER"));
+
+        Worker policyMemoryPreferred = createApprovedWorker("prefer-docker-memory");
+        Worker policyMemoryFallback = createApprovedWorker("prefer-docker-memory-fallback");
+        storeDockerCapabilities(policyMemoryPreferred, true, true, List.of("alpine:3.20"), 127, 8);
+        storeDockerCapabilities(policyMemoryFallback, true, true, List.of("alpine:3.20"), 4096, 8);
+        mockMvc.perform(adminCreate(dockerCreateRequestWithMode(
+                        dockerVersion.getId(),
+                        policyMemoryPreferred.getId(),
+                        "PREFER",
+                        "Fallback from Docker memory",
+                        128,
+                        1
+                )))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(policyMemoryFallback.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("PREFER"));
+
+        Worker policyCpuPreferred = createApprovedWorker("prefer-docker-cpu");
+        Worker policyCpuFallback = createApprovedWorker("prefer-docker-cpu-fallback");
+        storeDockerCapabilities(policyCpuPreferred, true, true, List.of("alpine:3.20"), 4096, 0);
+        storeDockerCapabilities(policyCpuFallback, true, true, List.of("alpine:3.20"), 4096, 8);
+        mockMvc.perform(adminCreate(dockerCreateRequestWithMode(
+                        dockerVersion.getId(),
+                        policyCpuPreferred.getId(),
+                        "PREFER",
+                        "Fallback from Docker CPU",
+                        128,
+                        1
+                )))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(policyCpuFallback.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("PREFER"));
+
+        Worker noFallbackPreferred = createApprovedWorker("prefer-no-capability-fallback");
+        expectConflict(noOpPreferCreateRequest(
+                noOpVersion.getId(),
+                noFallbackPreferred.getId(),
+                "No capability fallback"
+        ));
     }
 
     @Test
@@ -591,7 +754,7 @@ class AdminCreateExecutionControllerIntegrationTest {
     @Test
     void shouldApplyDockerResourceFitDuringAutoSelection() throws Exception {
         WorkDefinitionVersion dockerVersion = dockerVersion();
-        createWorker(
+        Worker lowMemoryWorker = createWorker(
                 "docker-low-memory",
                 WorkerApprovalStatus.APPROVED,
                 WorkerConnectionStatus.ONLINE,
@@ -599,7 +762,7 @@ class AdminCreateExecutionControllerIntegrationTest {
                 127,
                 16
         );
-        createWorker(
+        Worker lowCpuWorker = createWorker(
                 "docker-low-cpu",
                 WorkerApprovalStatus.APPROVED,
                 WorkerConnectionStatus.ONLINE,
@@ -607,7 +770,7 @@ class AdminCreateExecutionControllerIntegrationTest {
                 8192,
                 0
         );
-        createWorker(
+        Worker zeroSharedRamWorker = createWorker(
                 "docker-zero-shared",
                 WorkerApprovalStatus.APPROVED,
                 WorkerConnectionStatus.ONLINE,
@@ -615,6 +778,9 @@ class AdminCreateExecutionControllerIntegrationTest {
                 0,
                 16
         );
+        storeDockerCapabilities(lowMemoryWorker, true, true, List.of("alpine:3.20"), 4096, 8);
+        storeDockerCapabilities(lowCpuWorker, true, true, List.of("alpine:3.20"), 4096, 8);
+        storeDockerCapabilities(zeroSharedRamWorker, true, true, List.of("alpine:3.20"), 4096, 8);
 
         expectConflict(dockerAutoCreateRequest(dockerVersion.getId(), "No Docker fit", 128, 1));
 
@@ -626,10 +792,55 @@ class AdminCreateExecutionControllerIntegrationTest {
                 128,
                 1
         );
+        storeDockerCapabilities(exactFit, true, true, List.of("alpine:3.20"), 4096, 8);
 
         mockMvc.perform(adminCreate(dockerAutoCreateRequest(dockerVersion.getId(), "Exact Docker fit", 128, 1)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.assignment.workerId").value(exactFit.getId().toString()))
+                .andExpect(jsonPath("$.assignment.mode").value("AUTO"));
+    }
+
+    @Test
+    void shouldAutoSelectOnlyDockerWorkersMatchingPolicyAndHardware() throws Exception {
+        WorkDefinitionVersion dockerVersion = dockerVersion();
+        Worker missingSummary = createApprovedWorker("docker-missing-summary");
+        Worker dockerDisabled = createApprovedWorker("docker-disabled");
+        Worker imageNotAllowed = createApprovedWorker("docker-image-not-allowed");
+        Worker allowedImagesEmpty = createApprovedWorker("docker-empty-images");
+        Worker allowedImagesMissing = createApprovedWorker("docker-missing-images");
+        Worker policyMemoryTooLow = createApprovedWorker("docker-policy-memory");
+        Worker policyCpuTooLow = createApprovedWorker("docker-policy-cpu");
+        Worker workerMemoryTooLow = createWorker(
+                "docker-worker-memory",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE,
+                127,
+                16
+        );
+        Worker workerCpuTooLow = createWorker(
+                "docker-worker-cpu",
+                WorkerApprovalStatus.APPROVED,
+                WorkerConnectionStatus.ONLINE,
+                WorkerAvailabilityStatus.AVAILABLE,
+                8192,
+                0
+        );
+        Worker selectedWorker = createApprovedWorker("docker-policy-match");
+        storeDockerCapabilities(missingSummary, true, null, null, null, null);
+        storeDockerCapabilities(dockerDisabled, true, false, List.of("alpine:3.20"), 4096, 8);
+        storeDockerCapabilities(imageNotAllowed, true, true, List.of("ubuntu:24.04"), 4096, 8);
+        storeDockerCapabilities(allowedImagesEmpty, true, true, List.of(), 4096, 8);
+        storeDockerCapabilities(allowedImagesMissing, true, true, null, 4096, 8);
+        storeDockerCapabilities(policyMemoryTooLow, true, true, List.of("alpine:3.20"), 127, 8);
+        storeDockerCapabilities(policyCpuTooLow, true, true, List.of("alpine:3.20"), 4096, 0);
+        storeDockerCapabilities(workerMemoryTooLow, true, true, List.of("alpine:3.20"), 4096, 8);
+        storeDockerCapabilities(workerCpuTooLow, true, true, List.of("alpine:3.20"), 4096, 8);
+        storeDockerCapabilities(selectedWorker, true, true, List.of("alpine:3.20"), null, null);
+
+        mockMvc.perform(adminCreate(dockerAutoCreateRequest(dockerVersion.getId(), "Docker capability fit", 128, 1)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assignment.workerId").value(selectedWorker.getId().toString()))
                 .andExpect(jsonPath("$.assignment.mode").value("AUTO"));
     }
 
@@ -935,6 +1146,7 @@ class AdminCreateExecutionControllerIntegrationTest {
                                        Worker preferredWorker,
                                        Worker fallbackWorker,
                                        String displayName) throws Exception {
+        storeNoOpCapabilities(fallbackWorker);
         mockMvc.perform(adminCreate(noOpPreferCreateRequest(version.getId(), preferredWorker.getId(), displayName)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.assignment.workerId").value(fallbackWorker.getId().toString()))
@@ -1295,6 +1507,91 @@ class AdminCreateExecutionControllerIntegrationTest {
                 .connectionStatus(connectionStatus)
                 .availabilityStatus(availabilityStatus)
                 .build());
+    }
+
+    private void storeNoOpCapabilities(Worker worker) {
+        storeNoOpCapabilities(worker, true);
+    }
+
+    private void storeNoOpCapabilities(Worker worker, boolean enabled) {
+        storeCapabilities(
+                worker,
+                executors(executor("localhive.no-op", enabled)),
+                null,
+                null,
+                null,
+                null
+        );
+    }
+
+    private void storeDockerCapabilities(Worker worker,
+                                         boolean executorEnabled,
+                                         Boolean dockerEnabled,
+                                         List<String> dockerAllowedImages,
+                                         Integer dockerMaxMemoryMb,
+                                         Integer dockerMaxCpuCores) {
+        storeCapabilities(
+                worker,
+                executors(executor("localhive.docker.workload", executorEnabled)),
+                dockerEnabled,
+                dockerAllowedImages == null ? null : textArray(dockerAllowedImages),
+                dockerMaxMemoryMb,
+                dockerMaxCpuCores
+        );
+    }
+
+    private void storeCapabilities(Worker worker,
+                                   ArrayNode executors,
+                                   Boolean dockerEnabled,
+                                   ArrayNode dockerAllowedImages,
+                                   Integer dockerMaxMemoryMb,
+                                   Integer dockerMaxCpuCores) {
+        WorkerCapabilities capabilities = WorkerCapabilities.create(worker);
+        capabilities.replaceWith(
+                BASE_TIME,
+                executors,
+                dockerEnabled,
+                dockerAllowedImages,
+                dockerMaxMemoryMb,
+                dockerMaxCpuCores,
+                dockerGpuAllowed(dockerEnabled, dockerAllowedImages, dockerMaxMemoryMb, dockerMaxCpuCores)
+        );
+        workerCapabilitiesRepository.save(capabilities);
+    }
+
+    private static Boolean dockerGpuAllowed(Boolean dockerEnabled,
+                                            ArrayNode dockerAllowedImages,
+                                            Integer dockerMaxMemoryMb,
+                                            Integer dockerMaxCpuCores) {
+        if (dockerEnabled == null
+                && dockerAllowedImages == null
+                && dockerMaxMemoryMb == null
+                && dockerMaxCpuCores == null) {
+            return null;
+        }
+
+        return false;
+    }
+
+    private static ObjectNode executor(String executorId, boolean enabled) {
+        return JsonNodeFactory.instance.objectNode()
+                .put("executorId", executorId)
+                .put("executorContractVersion", 1)
+                .put("enabled", enabled);
+    }
+
+    private static ArrayNode executors(ObjectNode... executors) {
+        ArrayNode array = JsonNodeFactory.instance.arrayNode();
+        for (ObjectNode executor : executors) {
+            array.add(executor);
+        }
+        return array;
+    }
+
+    private static ArrayNode textArray(List<String> values) {
+        ArrayNode array = JsonNodeFactory.instance.arrayNode();
+        values.forEach(array::add);
+        return array;
     }
 
     private User createUser(String username) {

@@ -59,7 +59,7 @@ public class AdminExecutionCreationService {
         requireExecutableDefinitionVersion(definitionVersion);
 
         ExecutionConfiguration executionConfiguration = resolveConfiguration(definitionVersion, validRequest);
-        Worker worker = selectWorker(assignmentMode, requestedWorkerId, executionConfiguration.requestedResources());
+        Worker worker = selectWorker(assignmentMode, requestedWorkerId, executionConfiguration.selectionCriteria());
         var execution = creationService.createOneOffExecution(new CreateOneOffExecutionCommand(
                 definitionVersion.getId(),
                 executionConfiguration.configurationOverrides(),
@@ -109,15 +109,15 @@ public class AdminExecutionCreationService {
 
     private Worker selectWorker(ExecutionAssignmentMode assignmentMode,
                                 UUID requestedWorkerId,
-                                ResourceRequest requestedResources) {
+                                WorkerSelectionCriteria selectionCriteria) {
         return switch (assignmentMode) {
             case REQUIRE -> {
                 Worker worker = findWorker(requestedWorkerId);
                 requireApprovedWorker(worker);
                 yield worker;
             }
-            case AUTO -> workerSelectionService.selectAuto(requestedResources);
-            case PREFER -> workerSelectionService.selectPreferred(requestedWorkerId, requestedResources);
+            case AUTO -> workerSelectionService.selectAuto(selectionCriteria);
+            case PREFER -> workerSelectionService.selectPreferred(requestedWorkerId, selectionCriteria);
         };
     }
 
@@ -144,7 +144,7 @@ public class AdminExecutionCreationService {
     private ExecutionConfiguration resolveConfiguration(WorkDefinitionVersion definitionVersion,
                                                         AdminCreateExecutionRequestDto request) {
         if (NO_OP_EXECUTOR_ID.equals(definitionVersion.getExecutorId())) {
-            return noOpConfiguration(request.configuration());
+            return noOpConfiguration(definitionVersion, request.configuration());
         }
         if (DOCKER_EXECUTOR_ID.equals(definitionVersion.getExecutorId())) {
             DockerWorkloadConfiguration.Validated dockerConfiguration =
@@ -163,6 +163,16 @@ public class AdminExecutionCreationService {
                             dockerConfiguration.memoryMb(),
                             dockerConfiguration.cpuCores(),
                             false
+                    ),
+                    new WorkerSelectionCriteria(
+                            definitionVersion.getExecutorId(),
+                            definitionVersion.getExecutorContractVersion(),
+                            ResourceRequest.of(
+                                    dockerConfiguration.memoryMb(),
+                                    dockerConfiguration.cpuCores(),
+                                    false
+                            ),
+                            dockerConfiguration.image()
                     )
             );
         }
@@ -171,10 +181,21 @@ public class AdminExecutionCreationService {
                 + definitionVersion.getExecutorId());
     }
 
-    private static ExecutionConfiguration noOpConfiguration(Map<String, Object> configuration) {
+    private static ExecutionConfiguration noOpConfiguration(WorkDefinitionVersion definitionVersion,
+                                                            Map<String, Object> configuration) {
         ObjectNode sanitized = JsonNodeFactory.instance.objectNode();
         if (configuration == null) {
-            return new ExecutionConfiguration(sanitized, ResourceRequestOverrides.empty(), ResourceRequest.zero());
+            return new ExecutionConfiguration(
+                    sanitized,
+                    ResourceRequestOverrides.empty(),
+                    ResourceRequest.zero(),
+                    new WorkerSelectionCriteria(
+                            definitionVersion.getExecutorId(),
+                            definitionVersion.getExecutorContractVersion(),
+                            ResourceRequest.zero(),
+                            null
+                    )
+            );
         }
 
         for (String fieldName : configuration.keySet()) {
@@ -193,7 +214,17 @@ public class AdminExecutionCreationService {
             sanitized.put("message", textMessage);
         }
 
-        return new ExecutionConfiguration(sanitized, ResourceRequestOverrides.empty(), ResourceRequest.zero());
+        return new ExecutionConfiguration(
+                sanitized,
+                ResourceRequestOverrides.empty(),
+                ResourceRequest.zero(),
+                new WorkerSelectionCriteria(
+                        definitionVersion.getExecutorId(),
+                        definitionVersion.getExecutorContractVersion(),
+                        ResourceRequest.zero(),
+                        null
+                )
+        );
     }
 
     private static ObjectNode requireConfigurationObject(Map<String, Object> configuration, String message) {
@@ -293,7 +324,8 @@ public class AdminExecutionCreationService {
     private record ExecutionConfiguration(
             JsonNode configurationOverrides,
             ResourceRequestOverrides resourceOverrides,
-            ResourceRequest requestedResources
+            ResourceRequest requestedResources,
+            WorkerSelectionCriteria selectionCriteria
     ) {
     }
 }
