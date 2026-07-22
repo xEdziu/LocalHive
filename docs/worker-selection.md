@@ -314,10 +314,11 @@ Full request configuration and full capability payloads should not be expected i
 | `POST /api/admin/executions/selection-diagnostics` | Read-only diagnostics for worker selection decisions. |
 | `GET /api/admin/executions` | Monitor execution history. |
 | `GET /api/admin/executions/{executionId}` | Inspect one execution. |
+| `POST /api/admin/executions/{executionId}/cancel` | Cancel a `QUEUED` or `ASSIGNED` execution before real Agent-side execution begins. |
 | `GET /api/admin/workers` | Inspect worker overview state. |
 | `GET /api/admin/workers/{workerId}` | Inspect status and resource fields used by `AUTO` and `PREFER`. |
 
-The Work Definition API helps choose a definition/version. The Admin Worker API helps inspect workers. The Create Execution API uses assignment modes. This document describes how `AUTO` and `PREFER` choose a worker. The Admin Execution API monitors the result.
+The Work Definition API helps choose a definition/version. The Admin Worker API helps inspect workers. The Create Execution API uses assignment modes. This document describes how `AUTO` and `PREFER` choose a worker. The Admin Execution API monitors the result, and the [Admin Execution Cancel API](admin-execution-cancel-api.md) can cancel executions that have not started real Agent-side execution.
 
 ## Current Limitations
 
@@ -327,7 +328,8 @@ The Work Definition API helps choose a definition/version. The Admin Worker API 
 - one selected worker per execution,
 - no multi-worker or distributed execution,
 - no parent or child executions,
-- no retry, requeue, or cancel,
+- cancellation is handled separately for `QUEUED` and `ASSIGNED` executions only,
+- no retry or requeue,
 - no workload lifecycle support,
 - no GPU support,
 - no Agent policy sync,
@@ -345,7 +347,7 @@ Future work may add:
 - richer worker capability diagnostics,
 - GPU-aware selection,
 - load, history, or performance-based scoring,
-- cancellation, retry, and requeue,
+- Agent-side running cancellation, retry, and requeue,
 - workload lifecycle assignment,
 - distributed or multi-worker execution,
 - frontend create execution wizard.

@@ -14,6 +14,8 @@ The list and detail endpoints documented here do not mutate execution state.
 
 Executions can now be created from approved Work Definition Versions through the [Admin Create Execution API](admin-create-execution-api.md). M11 [Worker Selection](worker-selection.md) documents how `REQUIRE`, `AUTO`, and `PREFER` choose the assigned worker. M9 adds a read-only [Admin Work Definition API](admin-work-definition-api.md) for browsing definitions and versions before creating an execution.
 
+M14 adds a separate [Admin Execution Cancel API](admin-execution-cancel-api.md) for cancelling `QUEUED` or `ASSIGNED` executions before real Agent-side execution begins.
+
 ## List Executions
 
 ```http
@@ -168,6 +170,8 @@ GET /api/admin/artifacts/{artifactId}/download
 
 The artifact list endpoint returns metadata for output artifacts. The download endpoint streams one `EXECUTION_OUTPUT` artifact. Artifact APIs do not expose the physical storage path, and physical artifact storage remains internal to Master.
 
+Execution cancellation is documented separately in [Admin Execution Cancel API](admin-execution-cancel-api.md). Cancellation does not change output artifact endpoints and does not delete existing artifact metadata.
+
 Example artifact list response:
 
 ```json
@@ -189,7 +193,7 @@ Example artifact list response:
 
 ## Security / Non-Exposed Fields
 
-The admin execution list and detail responses do not expose:
+The admin execution list, detail, and cancel responses do not expose:
 
 - API key,
 - API key hash,
@@ -239,7 +243,10 @@ GET /api/admin/executions?workerId={workerId}&limit=50&offset=0
 ## Current Limitations
 
 - list and detail endpoints are read-only,
-- no cancel, retry, or requeue endpoints,
+- cancellation is limited to `QUEUED` and `ASSIGNED` through the separate cancel endpoint,
+- no cancellation of `CLAIMED` or `RUNNING`,
+- no Agent-side interruption or Docker kill,
+- no retry or requeue endpoints,
 - no date-range filtering,
 - no text search,
 - no cursor pagination yet,
@@ -254,9 +261,10 @@ Future work may add:
 
 - Master frontend execution table,
 - execution detail page,
+- frontend cancellation action,
 - artifact browser and download UI,
 - date range filters,
 - cursor pagination and indexing if needed,
-- cancellation, retry, and requeue after explicit design,
+- Agent-side running cancellation, retry, and requeue after explicit design,
 - safe configuration summary DTO if needed,
 - workload, Minecraft, and research naming use cases after those domains exist.

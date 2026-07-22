@@ -16,6 +16,7 @@ localhive-backend/src/main/resources/db/migration/V8__add_artifacts.sql
 localhive-backend/src/main/resources/db/migration/V9__add_execution_artifacts.sql
 localhive-backend/src/main/resources/db/migration/V10__add_execution_display_name_snapshot.sql
 localhive-backend/src/main/resources/db/migration/V11__add_worker_capabilities.sql
+localhive-backend/src/main/resources/db/migration/V12__allow_admin_cancelled_execution_reason.sql
 ```
 
 The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. V3 adds Work Definition identity and immutable version persistence. V4 adds Work Instance persistence, configuration overrides, and relational resource defaults/overrides. V5 adds Work Execution lifecycle persistence with resolved configuration and resource snapshots. V6 adds one Master-side execution assignment per execution and one concrete execution attempt once an assigned execution starts running. Metrics, scheduler queues, and compute-grid runtime tables are intentionally excluded until those domains are designed and implemented.
@@ -23,6 +24,7 @@ V7 adds worker claim lease fields directly to `execution_assignments`. The raw l
 V8 adds generic artifact metadata for workspace packages. V9 adds execution output artifact persistence and links each `EXECUTION_OUTPUT` artifact to the `WorkExecution` and uploading worker. Metrics, scheduler queues, compute-grid runtime tables, output retention policy, and large artifact storage are intentionally excluded until those domains are designed and implemented.
 V10 adds `work_executions.display_name_snapshot` for stable human-readable execution display. It is a required, nonblank `VARCHAR(255)` value and is documented in [Execution Display Metadata](execution-display-metadata.md).
 V11 adds `worker_capabilities`, a latest-snapshot table for safe Agent capability metadata reported through worker heartbeat. It does not add capability history, scheduler behavior, Docker policy synchronization, or capability-aware worker selection.
+V12 adjusts `work_executions` lifecycle and failure-field constraints so admin-side cancellation can store `completed_at`, `cancelled_at`, `ADMIN_CANCELLED`, and a safe cancellation message. It preserves compatibility with older cancellation semantics where needed and does not add a table.
 
 ## Integration Tests
 
@@ -267,7 +269,7 @@ erDiagram
 | `work_definitions` | Primary key on `id`; unique `logical_identifier`; check for lowercase logical identifier format; enum checks for `work_type` and `source_type`. |
 | `work_definition_versions` | Primary key on `id`; unique `(definition_id, version_number)`; foreign keys to `work_definitions(id)` and creator/reviewer `users(id)`; checks for version number, executor contract version, JSON object executor configuration, non-negative default RAM/CPU resources, lowercase SHA-256 checksum, approval status, and approval review metadata. |
 | `work_instances` | Primary key on `id`; foreign key to `work_definition_versions(id)`; checks for non-blank display name, JSON object configuration overrides, and non-negative nullable RAM/CPU resource overrides. |
-| `work_executions` | Primary key on `id`; foreign keys to `work_definition_versions(id)` and optional `work_instances(id)`; checks for lifecycle status values, nonblank display name snapshot, JSON object resolved configuration snapshot, non-negative resolved RAM/CPU resources, lifecycle timestamp consistency, and failure fields for failed executions. |
+| `work_executions` | Primary key on `id`; foreign keys to `work_definition_versions(id)` and optional `work_instances(id)`; checks for lifecycle status values, nonblank display name snapshot, JSON object resolved configuration snapshot, non-negative resolved RAM/CPU resources, lifecycle timestamp consistency, and failure fields for failed or admin-cancelled executions. |
 | `execution_assignments` | Primary key on `id`; unique `execution_id`; foreign keys to `work_executions(id)` and `workers(id)`; check for assignment modes `AUTO`, `PREFER`, and `REQUIRE`; check that claim lease fields are either all null or all present; index on `worker_id`. |
 | `execution_attempts` | Primary key on `id`; unique `execution_id`; unique `(execution_id, attempt_number)`; foreign keys to `work_executions(id)` and `execution_assignments(id)`; check that `attempt_number = 1`; checks for attempt statuses and terminal timestamp/failure-field consistency. |
 | `artifacts` | Primary key on `id`; enum check for `WORKSPACE_PACKAGE` and `EXECUTION_OUTPUT`; checks for non-blank original filename and storage path, nullable non-blank content type, non-negative size, and 64-character SHA-256. |
@@ -319,7 +321,7 @@ The `resolved_configuration_snapshot` column stores the effective JSONB object a
 
 The `display_name_snapshot` column stores a stable human-readable name captured when the execution is created. It is `VARCHAR(255)`, required, and nonblank after trimming. It is for UI, logs, dashboards, and history views only; it is not used as a path, filename, command argument, authorization input, assignment input, or lease input. Display metadata is documented in [Execution Display Metadata](execution-display-metadata.md).
 
-Current lifecycle statuses are `QUEUED`, `ASSIGNED`, `CLAIMED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, and `EXPIRED`. V5 stores timestamps for those lifecycle transitions and minimal failure fields (`failure_code`, `failure_message`) for failed executions.
+Current lifecycle statuses are `QUEUED`, `ASSIGNED`, `CLAIMED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, and `EXPIRED`. V5 stores timestamps for those lifecycle transitions and minimal failure fields (`failure_code`, `failure_message`) for failed executions. V12 allows admin-style cancelled executions to store `completed_at`, `cancelled_at`, `ADMIN_CANCELLED`, and the cancellation message. The admin cancel behavior is documented in [Admin Execution Cancel API](admin-execution-cancel-api.md).
 
 ## Execution Assignments and Attempts
 

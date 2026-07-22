@@ -31,7 +31,8 @@ Behavior:
 - Agent can claim it through the existing worker claim API,
 - worker selection happens only during this request,
 - no background scheduler,
-- no retry, requeue, or cancel endpoint,
+- no retry or requeue endpoint,
+- cancellation is handled by the separate [Admin Execution Cancel API](admin-execution-cancel-api.md),
 - no multi-worker execution.
 
 ## Request Shape
@@ -154,9 +155,10 @@ This endpoint still does not add:
 
 - background scheduler behavior,
 - multi-worker parent or child executions,
-- cancellation,
 - retry,
 - requeue.
+
+Executions that have not started real Agent-side execution can be cancelled through the separate [Admin Execution Cancel API](admin-execution-cancel-api.md).
 
 ## Supported Executor Configurations
 
@@ -289,6 +291,7 @@ The submitted configuration is stored internally for execution claim where neede
 | `GET /api/admin/work-definitions/{definitionId}` | Inspect one definition and its versions. |
 | `POST /api/admin/executions/selection-diagnostics` | Diagnose worker selection for a planned create request without side effects. |
 | `POST /api/admin/executions` | Create one execution and explicit worker assignment. |
+| `POST /api/admin/executions/{executionId}/cancel` | Cancel a `QUEUED` or `ASSIGNED` execution before real Agent-side execution begins. |
 | `GET /api/admin/executions` | Monitor execution history. |
 | `GET /api/admin/executions/{executionId}` | Inspect one execution. |
 | `GET /api/admin/workers/{workerId}` | Inspect the target worker and recent execution activity. |
@@ -349,7 +352,8 @@ Authorization: Bearer {{auth_token}}
 - Limited executor support.
 - Docker Master allowlist is currently `alpine:3.20`.
 - No GPU support.
-- No cancellation, retry, or requeue endpoint.
+- Cancellation is limited to `QUEUED` and `ASSIGNED` executions through the separate cancel endpoint.
+- No retry or requeue endpoint.
 - No YAML import.
 - No frontend UI yet.
 
@@ -361,7 +365,7 @@ Future work may add:
 - queueing without immediate assignment,
 - richer worker capability diagnostics,
 - Workload lifecycle creation,
-- cancellation, retry, and requeue after explicit design,
+- Agent-side running cancellation, retry, and requeue after explicit design,
 - YAML or template-based create flow,
 - safe parameter schema DTO,
 - frontend create execution wizard,
