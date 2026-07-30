@@ -4,6 +4,9 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+localhive-backend/requests/*
+*.http
+
 ### STS ###
 .apt_generated
 .classpath

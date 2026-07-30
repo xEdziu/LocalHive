@@ -320,6 +320,8 @@ Full request configuration and full capability payloads should not be expected i
 
 The Work Definition API helps choose a definition/version. The Admin Worker API helps inspect workers. The Create Execution API uses assignment modes. This document describes how `AUTO` and `PREFER` choose a worker. The Admin Execution API monitors the result, and the [Admin Execution Cancel API](admin-execution-cancel-api.md) can cancel executions that have not started real Agent-side execution.
 
+Future shard scheduling should reuse these selection rules. The proposed group model is documented in [Sharding ADR](architecture/sharding-adr.md).
+
 ## Current Limitations
 
 - no background scheduler,

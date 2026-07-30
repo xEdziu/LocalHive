@@ -306,4 +306,4 @@ Expected response body:
 
 M15 is preparation for future sharding, not an implementation of sharding.
 
-It proves that LocalHive can move a small code package into an Agent-controlled Docker execution and move results back through output artifacts. Sharding design should come later, after the S5 combined smoke backlog validates the current worker selection, diagnostics, cancellation, workspace, and output artifact flows.
+It proves that LocalHive can move a small code package into an Agent-controlled Docker execution and move results back through output artifacts. The proposed sharding model is documented in [Sharding ADR](architecture/sharding-adr.md).

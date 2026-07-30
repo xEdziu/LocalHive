@@ -188,3 +188,5 @@ Future work may add:
 - frontend cancellation action,
 - retry and requeue flows,
 - parent or child execution cancellation after sharding exists.
+
+The proposed group cancellation direction is documented in [Sharding ADR](architecture/sharding-adr.md).
