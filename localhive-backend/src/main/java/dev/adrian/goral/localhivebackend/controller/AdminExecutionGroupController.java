@@ -1,15 +1,19 @@
 package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupStatus;
+import dev.adrian.goral.localhivebackend.dto.AdminCreateExecutionGroupRequestDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupChildExecutionResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupDetailResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupListResponseDto;
+import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupCreationService;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupQueryService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -17,6 +21,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.NoSuchElementException;
 import java.util.UUID;
 
 @RestController
@@ -27,7 +32,21 @@ public class AdminExecutionGroupController {
     private static final int DEFAULT_LIMIT = 50;
     private static final int DEFAULT_OFFSET = 0;
 
+    private final AdminExecutionGroupCreationService creationService;
     private final AdminExecutionGroupQueryService queryService;
+
+    @PostMapping
+    public ResponseEntity<AdminExecutionGroupDetailResponseDto> createGroup(
+            @RequestBody AdminCreateExecutionGroupRequestDto request
+    ) {
+        try {
+            return ResponseEntity.status(HttpStatus.CREATED).body(creationService.createExecutionGroup(request));
+        } catch (NoSuchElementException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
 
     @GetMapping
     public ResponseEntity<AdminExecutionGroupListResponseDto> listGroups(

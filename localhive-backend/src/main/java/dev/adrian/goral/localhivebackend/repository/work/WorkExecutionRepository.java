@@ -86,6 +86,19 @@ public interface WorkExecutionRepository extends JpaRepository<WorkExecution, UU
             @Param("executionGroupId") UUID executionGroupId
     );
 
+    @EntityGraph(attributePaths = {"definitionVersion", "definitionVersion.definition", "executionGroup"})
+    @Query("""
+            SELECT execution
+            FROM WorkExecution execution
+            WHERE execution.executionGroup.id = :executionGroupId
+              AND execution.groupRole = dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionGroupRole.SHARD
+              AND execution.status = dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus.QUEUED
+            ORDER BY execution.shardIndex ASC, execution.createdAt ASC, execution.id ASC
+            """)
+    List<WorkExecution> findQueuedShardExecutionsByExecutionGroupId(
+            @Param("executionGroupId") UUID executionGroupId
+    );
+
     @Query("""
             SELECT execution.executionGroup.id AS executionGroupId,
                    execution.status AS status,

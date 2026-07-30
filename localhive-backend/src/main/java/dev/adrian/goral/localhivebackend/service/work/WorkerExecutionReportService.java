@@ -18,6 +18,7 @@ public class WorkerExecutionReportService {
 
     private final ExecutionLeaseValidationService leaseValidationService;
     private final WorkExecutionLifecycleService lifecycleService;
+    private final ExecutionGroupSchedulingService executionGroupSchedulingService;
 
     @Transactional
     public WorkExecution reportRunning(UUID workerId, UUID executionId, String rawLeaseToken, LocalDateTime now) {
@@ -42,7 +43,9 @@ public class WorkerExecutionReportService {
                 validCompletedAt,
                 EnumSet.of(WorkExecutionStatus.RUNNING)
         );
-        return lifecycleService.markSucceeded(executionId, validCompletedAt);
+        WorkExecution execution = lifecycleService.markSucceeded(executionId, validCompletedAt);
+        executionGroupSchedulingService.afterTerminalChildReport(execution, validCompletedAt);
+        return execution;
     }
 
     @Transactional
@@ -67,7 +70,9 @@ public class WorkerExecutionReportService {
                 validCompletedAt,
                 EnumSet.of(WorkExecutionStatus.RUNNING)
         );
-        return lifecycleService.markFailed(executionId, failureCode, failureMessage, validCompletedAt);
+        WorkExecution execution = lifecycleService.markFailed(executionId, failureCode, failureMessage, validCompletedAt);
+        executionGroupSchedulingService.afterTerminalChildReport(execution, validCompletedAt);
+        return execution;
     }
 
     @Transactional

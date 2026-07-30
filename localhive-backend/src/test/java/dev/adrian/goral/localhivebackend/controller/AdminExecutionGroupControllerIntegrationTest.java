@@ -1,8 +1,13 @@
 package dev.adrian.goral.localhivebackend.controller;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jayway.jsonpath.JsonPath;
 import dev.adrian.goral.localhivebackend.domain.User;
 import dev.adrian.goral.localhivebackend.domain.Worker;
+import dev.adrian.goral.localhivebackend.domain.WorkerCapabilities;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
@@ -15,6 +20,7 @@ import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupFailure
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupMergeMode;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
 import dev.adrian.goral.localhivebackend.repository.UserRepository;
+import dev.adrian.goral.localhivebackend.repository.WorkerCapabilitiesRepository;
 import dev.adrian.goral.localhivebackend.repository.WorkerRepository;
 import dev.adrian.goral.localhivebackend.repository.artifact.ArtifactRepository;
 import dev.adrian.goral.localhivebackend.repository.artifact.ExecutionArtifactRepository;
@@ -48,12 +54,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import java.time.LocalDateTime;
+import java.util.Comparator;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.notNullValue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -127,6 +136,9 @@ class AdminExecutionGroupControllerIntegrationTest {
     private WorkerRepository workerRepository;
 
     @Autowired
+    private WorkerCapabilitiesRepository workerCapabilitiesRepository;
+
+    @Autowired
     private UserRepository userRepository;
 
     private User adminUser;
@@ -142,6 +154,7 @@ class AdminExecutionGroupControllerIntegrationTest {
         instanceRepository.deleteAll();
         versionRepository.deleteAll();
         definitionRepository.deleteAll();
+        workerCapabilitiesRepository.deleteAll();
         workerRepository.deleteAll();
         userRepository.deleteAll();
 
@@ -152,6 +165,15 @@ class AdminExecutionGroupControllerIntegrationTest {
     void shouldEnforceAdminSecurityForExecutionGroupEndpoints() throws Exception {
         WorkerCredentials credentials = createApprovedWorkerCredentials("security");
         ExecutionGroup group = createGroup("Security group", 1);
+        WorkDefinitionVersion version = dockerVersion();
+        String createRequest = shardedCreateRequest(
+                version.getId(),
+                "Security create group",
+                1,
+                "AUTO",
+                null,
+                "FAIL_FAST"
+        );
 
         mockMvc.perform(get("/api/admin/execution-groups")
                         .accept(MediaType.APPLICATION_JSON))
@@ -164,6 +186,13 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(jsonPath("$.message").value("Authentication failed."));
 
         mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/executions", group.getId())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
+        mockMvc.perform(post("/api/admin/execution-groups")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest)
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("Authentication failed."));
@@ -186,6 +215,14 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("Authentication failed."));
 
+        mockMvc.perform(post("/api/admin/execution-groups")
+                        .header(API_KEY_HEADER, credentials.rawApiKey())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
         mockMvc.perform(get("/api/admin/execution-groups")
                         .with(user("operator").roles("USER"))
                         .accept(MediaType.APPLICATION_JSON))
@@ -204,6 +241,14 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message").value("Access denied."));
 
+        mockMvc.perform(post("/api/admin/execution-groups")
+                        .with(user("operator").roles("USER"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("Access denied."));
+
         mockMvc.perform(get("/api/admin/execution-groups")
                         .with(admin())
                         .accept(MediaType.APPLICATION_JSON))
@@ -218,6 +263,14 @@ class AdminExecutionGroupControllerIntegrationTest {
                         .with(admin())
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/admin/execution-groups")
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.executionGroupId").exists());
     }
 
     @Test
@@ -462,6 +515,542 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .hasValueSatisfying(stored -> assertThat(stored.getStatus().name()).isEqualTo("SUCCEEDED"));
     }
 
+    @Test
+    void shouldRejectInvalidShardedExecutionGroupCreateRequests() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+
+        expectBadCreate(shardedCreateRequest(version.getId(), "Invalid shards", 0, "AUTO", null, "FAIL_FAST"))
+                .andExpect(jsonPath("$.message").value("shardCount must be greater than 0."));
+
+        expectBadCreate("""
+                {
+                  "displayName": "Missing command template",
+                  "workDefinitionVersionId": "%s",
+                  "shardCount": 2,
+                  "mergeMode": "NONE",
+                  "failurePolicy": "FAIL_FAST",
+                  "assignmentMode": "AUTO",
+                  "configurationTemplate": {
+                    "image": "alpine:3.20",
+                    "timeoutSeconds": 30,
+                    "resources": {
+                      "memoryMb": 128,
+                      "cpuCores": 1
+                    },
+                    "gpu": {
+                      "required": false
+                    }
+                  }
+                }
+                """.formatted(version.getId()))
+                .andExpect(jsonPath("$.message").value("configurationTemplate.commandTemplate is required."));
+
+        expectBadCreate(shardedCreateRequestWithCommandTemplate(
+                version.getId(),
+                "Unsupported placeholder",
+                2,
+                "AUTO",
+                null,
+                "FAIL_FAST",
+                "[\"sh\", \"/workspace/optimize.sh\", \"{{unknown}}\"]"
+        )).andExpect(jsonPath("$.message").value("Unsupported commandTemplate placeholder: {{unknown}}"));
+
+        expectBadCreate(shardedCreateRequest(version.getId(), "Master merge", 2, "AUTO", null, "FAIL_FAST", "MASTER"))
+                .andExpect(jsonPath("$.message").value("Merge modes MASTER and AGENT are designed but not implemented in M18."));
+
+        expectBadCreate(shardedCreateRequest(version.getId(), "Agent merge", 2, "AUTO", null, "FAIL_FAST", "AGENT"))
+                .andExpect(jsonPath("$.message").value("Merge modes MASTER and AGENT are designed but not implemented in M18."));
+
+        expectBadCreate(shardedCreateRequest(version.getId(), "Require group", 2, "REQUIRE", null, "FAIL_FAST"))
+                .andExpect(jsonPath("$.message").value("REQUIRE assignmentMode is not supported for execution group creation in M18."));
+    }
+
+    @Test
+    void shouldRejectEmptyCommandTemplateWithoutPersistingGroupOrChildren() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        long groupCount = groupRepository.count();
+        long executionCount = executionRepository.count();
+
+        expectBadCreate(shardedCreateRequestWithCommandTemplate(
+                version.getId(),
+                "Empty command template",
+                2,
+                "AUTO",
+                null,
+                "FAIL_FAST",
+                "[]"
+        )).andExpect(jsonPath("$.message").value("configurationTemplate.commandTemplate must be a non-empty array."));
+
+        assertThat(groupRepository.count()).isEqualTo(groupCount);
+        assertThat(executionRepository.count()).isEqualTo(executionCount);
+    }
+
+    @Test
+    void shouldRejectMalformedCommandTemplatePlaceholderWithoutPersistingGroupOrChildren() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        long groupCount = groupRepository.count();
+        long executionCount = executionRepository.count();
+
+        expectBadCreate(shardedCreateRequestWithCommandTemplate(
+                version.getId(),
+                "Malformed placeholder",
+                2,
+                "AUTO",
+                null,
+                "FAIL_FAST",
+                "[\"sh\", \"/workspace/optimize.sh\", \"{{shardIndex\", \"{{shardCount}}\"]"
+        )).andExpect(jsonPath("$.message").value("Unsupported commandTemplate placeholder."));
+
+        assertThat(groupRepository.count()).isEqualTo(groupCount);
+        assertThat(executionRepository.count()).isEqualTo(executionCount);
+    }
+
+    @Test
+    void shouldCreateShardChildrenWithExpandedCommandsAndScheduleTwoEligibleWorkers() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Worker firstWorker = createApprovedWorker("initial-first");
+        Worker secondWorker = createApprovedWorker("initial-second");
+        storeDockerCapabilities(firstWorker);
+        storeDockerCapabilities(secondWorker);
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups")
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(shardedCreateRequest(
+                                version.getId(),
+                                "M18 Sharded Optimization",
+                                3,
+                                "AUTO",
+                                null,
+                                "FAIL_FAST"
+                        ))
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.displayName").value("M18 Sharded Optimization"))
+                .andExpect(jsonPath("$.status").value("RUNNING"))
+                .andExpect(jsonPath("$.mergeMode").value("NONE"))
+                .andExpect(jsonPath("$.failurePolicy").value("FAIL_FAST"))
+                .andExpect(jsonPath("$.shardCount").value(3))
+                .andExpect(jsonPath("$.totalExecutions").value(3))
+                .andExpect(jsonPath("$.activeExecutions").value(2))
+                .andExpect(jsonPath("$.terminalExecutions").value(0))
+                .andExpect(jsonPath("$.childExecutionCounts.ASSIGNED").value(2))
+                .andExpect(jsonPath("$.childExecutionCounts.QUEUED").value(1))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminResponse(response);
+        UUID executionGroupId = UUID.fromString(JsonPath.read(response, "$.executionGroupId"));
+
+        List<WorkExecution> children = executionRepository.findAdminExecutionsByExecutionGroupId(executionGroupId)
+                .stream()
+                .sorted(Comparator.comparing(WorkExecution::getShardIndex))
+                .toList();
+        assertThat(children).hasSize(3);
+        for (int shardIndex = 0; shardIndex < children.size(); shardIndex++) {
+            WorkExecution child = children.get(shardIndex);
+            assertThat(child.getExecutionGroupId()).isEqualTo(executionGroupId);
+            assertThat(child.getGroupRole().name()).isEqualTo("SHARD");
+            assertThat(child.getShardIndex()).isEqualTo(shardIndex);
+            assertThat(child.getShardCount()).isEqualTo(3);
+            JsonNode configuration = child.getResolvedConfigurationSnapshot();
+            assertThat(configuration.has("commandTemplate")).isFalse();
+            assertThat(configuration.get("command").get(2).asText()).isEqualTo(Integer.toString(shardIndex));
+            assertThat(configuration.get("command").get(3).asText()).isEqualTo("3");
+        }
+
+        List<UUID> assignedWorkerIds = assignmentRepository.findByExecution_IdIn(children.stream()
+                        .map(WorkExecution::getId)
+                        .toList())
+                .stream()
+                .map(assignment -> assignment.getWorker().getId())
+                .toList();
+        assertThat(assignedWorkerIds).hasSize(2);
+        assertThat(assignedWorkerIds).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void shouldScheduleOnlyOneShardWithOneEligibleWorkerAndLeaveRestQueued() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Worker worker = createApprovedWorker("single-worker");
+        storeDockerCapabilities(worker);
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups")
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(shardedCreateRequest(version.getId(), "Single worker group", 3, "AUTO", null, "FAIL_FAST"))
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("RUNNING"))
+                .andExpect(jsonPath("$.childExecutionCounts.ASSIGNED").value(1))
+                .andExpect(jsonPath("$.childExecutionCounts.QUEUED").value(2))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        UUID executionGroupId = UUID.fromString(JsonPath.read(response, "$.executionGroupId"));
+        assertThat(executionRepository.findAdminExecutionsByExecutionGroupId(executionGroupId))
+                .extracting(WorkExecution::getStatus)
+                .containsExactlyInAnyOrder(
+                        dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus.ASSIGNED,
+                        dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus.QUEUED,
+                        dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus.QUEUED
+                );
+    }
+
+    @Test
+    void shouldPreferRequestedWorkerForFirstShardWhenEligible() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Worker preferredWorker = createApprovedWorker("preferred");
+        Worker fallbackWorker = createApprovedWorker("preferred-fallback");
+        storeDockerCapabilities(preferredWorker);
+        storeDockerCapabilities(fallbackWorker);
+
+        UUID executionGroupId = createShardedGroup(
+                version.getId(),
+                "Prefer group",
+                2,
+                "PREFER",
+                preferredWorker.getId(),
+                "FAIL_FAST"
+        );
+
+        List<WorkExecution> children = executionRepository.findAdminExecutionsByExecutionGroupId(executionGroupId)
+                .stream()
+                .sorted(Comparator.comparing(WorkExecution::getShardIndex))
+                .toList();
+        assertThat(children).hasSize(2);
+
+        assertThat(assignmentRepository.findByExecution(children.get(0)))
+                .hasValueSatisfying(assignment -> {
+                    assertThat(assignment.getAssignmentMode()).isEqualTo(ExecutionAssignmentMode.PREFER);
+                    assertThat(assignment.getWorker().getId()).isEqualTo(preferredWorker.getId());
+                });
+        assertThat(assignmentRepository.findByExecution(children.get(1)))
+                .hasValueSatisfying(assignment -> {
+                    assertThat(assignment.getAssignmentMode()).isEqualTo(ExecutionAssignmentMode.AUTO);
+                    assertThat(assignment.getWorker().getId()).isEqualTo(fallbackWorker.getId());
+                });
+    }
+
+    @Test
+    void shouldLeaveAllShardsQueuedWhenNoWorkerIsEligible() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups")
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(shardedCreateRequest(version.getId(), "No worker group", 2, "AUTO", null, "FAIL_FAST"))
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("RUNNING"))
+                .andExpect(jsonPath("$.totalExecutions").value(2))
+                .andExpect(jsonPath("$.activeExecutions").value(0))
+                .andExpect(jsonPath("$.childExecutionCounts.QUEUED").value(2))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminResponse(response);
+        UUID executionGroupId = UUID.fromString(JsonPath.read(response, "$.executionGroupId"));
+        assertThat(executionRepository.findAdminExecutionsByExecutionGroupId(executionGroupId))
+                .allSatisfy(child -> assertThat(child.getStatus().name()).isEqualTo("QUEUED"));
+    }
+
+    @Test
+    void shouldWaveScheduleQueuedShardsAfterTerminalReportsAndSucceedGroup() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        WorkerCredentials worker = createApprovedWorkerCredentials("wave");
+        storeDockerCapabilities(worker.worker());
+
+        UUID executionGroupId = createShardedGroup(
+                version.getId(),
+                "Wave group",
+                3,
+                "AUTO",
+                null,
+                "FAIL_FAST"
+        );
+        assertGroupCounts(executionGroupId, "RUNNING", 1, 0, 1, 2);
+
+        ClaimedShard first = claimNext(worker);
+        reportSucceeded(worker, first);
+        assertGroupCounts(executionGroupId, "RUNNING", 1, 1, 1, 1);
+
+        ClaimedShard second = claimNext(worker);
+        assertThat(second.executionId()).isNotEqualTo(first.executionId());
+        reportSucceeded(worker, second);
+        assertGroupCounts(executionGroupId, "RUNNING", 1, 2, 1, 0);
+
+        ClaimedShard third = claimNext(worker);
+        assertThat(third.executionId()).isNotIn(first.executionId(), second.executionId());
+        reportSucceeded(worker, third);
+        assertGroupCounts(executionGroupId, "SUCCEEDED", 0, 3, 0, 0);
+    }
+
+    @Test
+    void shouldDeriveFailedGroupStatusForFailFastPolicy() throws Exception {
+        WorkDefinitionVersion failFastVersion = dockerVersion();
+        WorkerCredentials failFastWorker = createApprovedWorkerCredentials("fail-fast");
+        storeDockerCapabilities(failFastWorker.worker());
+        UUID failFastGroupId = createShardedGroup(
+                failFastVersion.getId(),
+                "Fail fast group",
+                2,
+                "AUTO",
+                null,
+                "FAIL_FAST"
+        );
+        reportFailed(failFastWorker, claimNext(failFastWorker));
+        reportSucceeded(failFastWorker, claimNext(failFastWorker));
+        assertGroupCounts(failFastGroupId, "FAILED", 0, 2, 0, 0);
+    }
+
+    @Test
+    void shouldDerivePartiallyFailedGroupStatusForAllowPartialPolicy() throws Exception {
+        WorkDefinitionVersion partialVersion = dockerVersion();
+        WorkerCredentials partialWorker = createApprovedWorkerCredentials("partial");
+        storeDockerCapabilities(partialWorker.worker());
+        UUID partialGroupId = createShardedGroup(
+                partialVersion.getId(),
+                "Partial group",
+                2,
+                "AUTO",
+                null,
+                "ALLOW_PARTIAL"
+        );
+        reportFailed(partialWorker, claimNext(partialWorker));
+        reportSucceeded(partialWorker, claimNext(partialWorker));
+        assertGroupCounts(partialGroupId, "PARTIALLY_FAILED", 0, 2, 0, 0);
+    }
+
+    private org.springframework.test.web.servlet.ResultActions expectBadCreate(String request) throws Exception {
+        return mockMvc.perform(post("/api/admin/execution-groups")
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest());
+    }
+
+    private UUID createShardedGroup(UUID versionId,
+                                    String displayName,
+                                    int shardCount,
+                                    String assignmentMode,
+                                    UUID workerId,
+                                    String failurePolicy) throws Exception {
+        String response = mockMvc.perform(post("/api/admin/execution-groups")
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(shardedCreateRequest(
+                                versionId,
+                                displayName,
+                                shardCount,
+                                assignmentMode,
+                                workerId,
+                                failurePolicy
+                        ))
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertSafeAdminResponse(response);
+        return UUID.fromString(JsonPath.read(response, "$.executionGroupId"));
+    }
+
+    private void assertGroupCounts(UUID executionGroupId,
+                                   String expectedStatus,
+                                   int activeExecutions,
+                                   int terminalExecutions,
+                                   int assignedExecutions,
+                                   int queuedExecutions) throws Exception {
+        var result = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}", executionGroupId)
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value(expectedStatus))
+                .andExpect(jsonPath("$.activeExecutions").value(activeExecutions))
+                .andExpect(jsonPath("$.terminalExecutions").value(terminalExecutions));
+
+        if (assignedExecutions == 0) {
+            result.andExpect(jsonPath("$.childExecutionCounts.ASSIGNED").doesNotExist());
+        } else {
+            result.andExpect(jsonPath("$.childExecutionCounts.ASSIGNED").value(assignedExecutions));
+        }
+        if (queuedExecutions == 0) {
+            result.andExpect(jsonPath("$.childExecutionCounts.QUEUED").doesNotExist());
+        } else {
+            result.andExpect(jsonPath("$.childExecutionCounts.QUEUED").value(queuedExecutions));
+        }
+    }
+
+    private ClaimedShard claimNext(WorkerCredentials worker) throws Exception {
+        String response = mockMvc.perform(post(
+                        "/api/workers/{workerId}/assigned-executions/claim-next",
+                        worker.worker().getId()
+                )
+                        .header(API_KEY_HEADER, worker.rawApiKey())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.executionId").value(notNullValue()))
+                .andExpect(jsonPath("$.leaseToken").value(notNullValue()))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        return new ClaimedShard(
+                UUID.fromString(JsonPath.read(response, "$.executionId")),
+                JsonPath.read(response, "$.leaseToken")
+        );
+    }
+
+    private void reportSucceeded(WorkerCredentials worker, ClaimedShard claimedShard) throws Exception {
+        reportRunning(worker, claimedShard);
+        mockMvc.perform(post(
+                        "/api/workers/{workerId}/executions/{executionId}/succeeded",
+                        worker.worker().getId(),
+                        claimedShard.executionId()
+                )
+                        .header(API_KEY_HEADER, worker.rawApiKey())
+                        .header("X-EXECUTION-LEASE", claimedShard.leaseToken())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"));
+    }
+
+    private void reportFailed(WorkerCredentials worker, ClaimedShard claimedShard) throws Exception {
+        reportRunning(worker, claimedShard);
+        mockMvc.perform(post(
+                        "/api/workers/{workerId}/executions/{executionId}/failed",
+                        worker.worker().getId(),
+                        claimedShard.executionId()
+                )
+                        .header(API_KEY_HEADER, worker.rawApiKey())
+                        .header("X-EXECUTION-LEASE", claimedShard.leaseToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "failureCode": "TEST_FAILURE",
+                                  "failureMessage": "Test failure"
+                                }
+                                """)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("FAILED"));
+    }
+
+    private void reportRunning(WorkerCredentials worker, ClaimedShard claimedShard) throws Exception {
+        mockMvc.perform(post(
+                        "/api/workers/{workerId}/executions/{executionId}/running",
+                        worker.worker().getId(),
+                        claimedShard.executionId()
+                )
+                        .header(API_KEY_HEADER, worker.rawApiKey())
+                        .header("X-EXECUTION-LEASE", claimedShard.leaseToken())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RUNNING"));
+    }
+
+    private String shardedCreateRequest(UUID versionId,
+                                        String displayName,
+                                        int shardCount,
+                                        String assignmentMode,
+                                        UUID workerId,
+                                        String failurePolicy) {
+        return shardedCreateRequest(
+                versionId,
+                displayName,
+                shardCount,
+                assignmentMode,
+                workerId,
+                failurePolicy,
+                "NONE"
+        );
+    }
+
+    private String shardedCreateRequest(UUID versionId,
+                                        String displayName,
+                                        int shardCount,
+                                        String assignmentMode,
+                                        UUID workerId,
+                                        String failurePolicy,
+                                        String mergeMode) {
+        return shardedCreateRequest(
+                versionId,
+                displayName,
+                shardCount,
+                assignmentMode,
+                workerId,
+                failurePolicy,
+                "[\"sh\", \"/workspace/optimize.sh\", \"{{shardIndex}}\", \"{{shardCount}}\"]",
+                mergeMode
+        );
+    }
+
+    private String shardedCreateRequestWithCommandTemplate(UUID versionId,
+                                                           String displayName,
+                                                           int shardCount,
+                                                           String assignmentMode,
+                                                           UUID workerId,
+                                                           String failurePolicy,
+                                                           String commandTemplate) {
+        return shardedCreateRequest(
+                versionId,
+                displayName,
+                shardCount,
+                assignmentMode,
+                workerId,
+                failurePolicy,
+                commandTemplate,
+                "NONE"
+        );
+    }
+
+    private String shardedCreateRequest(UUID versionId,
+                                        String displayName,
+                                        int shardCount,
+                                        String assignmentMode,
+                                        UUID workerId,
+                                        String failurePolicy,
+                                        String commandTemplate,
+                                        String mergeMode) {
+        String workerValue = workerId == null ? "null" : "\"" + workerId + "\"";
+        return """
+                {
+                  "displayName": "%s",
+                  "workDefinitionVersionId": "%s",
+                  "shardCount": %d,
+                  "mergeMode": "%s",
+                  "failurePolicy": "%s",
+                  "assignmentMode": "%s",
+                  "workerId": %s,
+                  "configurationTemplate": {
+                    "image": "alpine:3.20",
+                    "commandTemplate": %s,
+                    "timeoutSeconds": 30,
+                    "resources": {
+                      "memoryMb": 128,
+                      "cpuCores": 1
+                    },
+                    "gpu": {
+                      "required": false
+                    }
+                  }
+                }
+                """.formatted(
+                displayName,
+                versionId,
+                shardCount,
+                mergeMode,
+                failurePolicy,
+                assignmentMode,
+                workerValue,
+                commandTemplate
+        );
+    }
+
     private ExecutionGroup createGroup(String displayName, int shardCount) {
         return groupRepository.save(ExecutionGroup.create(
                 displayName,
@@ -513,8 +1102,73 @@ class AdminExecutionGroupControllerIntegrationTest {
         ));
     }
 
+    private WorkDefinitionVersion dockerVersion() {
+        return definitionManagementService.createLocalDefinition(new DefinitionContentCommand(
+                "localhive.execution-group-docker-" + UUID.randomUUID(),
+                WorkType.TASK,
+                "Docker Workload",
+                null,
+                "localhive.docker.workload",
+                1,
+                dockerBaseConfiguration(),
+                ResourceRequest.of(128, 1, false),
+                adminUser.getId()
+        ));
+    }
+
+    private static ObjectNode dockerBaseConfiguration() {
+        ObjectNode configuration = JsonNodeFactory.instance.objectNode();
+        configuration.put("image", "alpine:3.20");
+        configuration.putArray("command")
+                .add("sh")
+                .add("-c")
+                .add("echo LocalHive Docker workload");
+        configuration.put("timeoutSeconds", 30);
+        configuration.putObject("resources")
+                .put("memoryMb", 128)
+                .put("cpuCores", 1);
+        configuration.putObject("gpu")
+                .put("required", false);
+        return configuration;
+    }
+
     private Worker createApprovedWorker(String suffix) {
         return createApprovedWorkerCredentials(suffix).worker();
+    }
+
+    private void storeDockerCapabilities(Worker worker) {
+        WorkerCapabilities capabilities = WorkerCapabilities.create(worker);
+        capabilities.replaceWith(
+                BASE_TIME,
+                executors(executor("localhive.docker.workload")),
+                true,
+                textArray(List.of("alpine:3.20")),
+                4096,
+                8,
+                false
+        );
+        workerCapabilitiesRepository.save(capabilities);
+    }
+
+    private static ObjectNode executor(String executorId) {
+        return JsonNodeFactory.instance.objectNode()
+                .put("executorId", executorId)
+                .put("executorContractVersion", 1)
+                .put("enabled", true);
+    }
+
+    private static ArrayNode executors(ObjectNode... executors) {
+        ArrayNode array = JsonNodeFactory.instance.arrayNode();
+        for (ObjectNode executor : executors) {
+            array.add(executor);
+        }
+        return array;
+    }
+
+    private static ArrayNode textArray(List<String> values) {
+        ArrayNode array = JsonNodeFactory.instance.arrayNode();
+        values.forEach(array::add);
+        return array;
     }
 
     private WorkerCredentials createApprovedWorkerCredentials(String suffix) {
@@ -566,5 +1220,8 @@ class AdminExecutionGroupControllerIntegrationTest {
     }
 
     private record WorkerCredentials(Worker worker, String rawApiKey) {
+    }
+
+    private record ClaimedShard(UUID executionId, String leaseToken) {
     }
 }

@@ -92,6 +92,55 @@ public class ExecutionGroup {
         return new ExecutionGroup(displayName, mergeMode, failurePolicy, shardCount, createdAt);
     }
 
+    public void markRunning(LocalDateTime updatedAt) {
+        if (isCancellationOrExpiredState()) {
+            return;
+        }
+
+        this.status = ExecutionGroupStatus.RUNNING;
+        this.updatedAt = Objects.requireNonNull(updatedAt, "updatedAt must not be null.");
+        this.completedAt = null;
+        this.failureCode = null;
+        this.failureMessage = null;
+    }
+
+    public void markSucceeded(LocalDateTime completedAt) {
+        if (isCancellationOrExpiredState()) {
+            return;
+        }
+
+        LocalDateTime validCompletedAt = Objects.requireNonNull(completedAt, "completedAt must not be null.");
+        this.status = ExecutionGroupStatus.SUCCEEDED;
+        this.updatedAt = validCompletedAt;
+        this.completedAt = validCompletedAt;
+        this.failureCode = null;
+        this.failureMessage = null;
+    }
+
+    public void markFailed(String failureCode, String failureMessage, LocalDateTime completedAt) {
+        markTerminalFailure(ExecutionGroupStatus.FAILED, failureCode, failureMessage, completedAt);
+    }
+
+    public void markPartiallyFailed(String failureCode, String failureMessage, LocalDateTime completedAt) {
+        markTerminalFailure(ExecutionGroupStatus.PARTIALLY_FAILED, failureCode, failureMessage, completedAt);
+    }
+
+    private void markTerminalFailure(ExecutionGroupStatus status,
+                                     String failureCode,
+                                     String failureMessage,
+                                     LocalDateTime completedAt) {
+        if (isCancellationOrExpiredState()) {
+            return;
+        }
+
+        LocalDateTime validCompletedAt = Objects.requireNonNull(completedAt, "completedAt must not be null.");
+        this.status = Objects.requireNonNull(status, "status must not be null.");
+        this.updatedAt = validCompletedAt;
+        this.completedAt = validCompletedAt;
+        this.failureCode = requireNonBlank(failureCode, "failureCode");
+        this.failureMessage = requireNullableNonBlank(failureMessage, "failureMessage");
+    }
+
     private static String requireDisplayName(String displayName) {
         if (displayName == null || displayName.isBlank()) {
             throw new IllegalArgumentException("displayName must not be blank.");
@@ -111,6 +160,28 @@ public class ExecutionGroup {
         }
 
         return shardCount;
+    }
+
+    private boolean isCancellationOrExpiredState() {
+        return status == ExecutionGroupStatus.CANCELLING
+                || status == ExecutionGroupStatus.CANCELLED
+                || status == ExecutionGroupStatus.EXPIRED;
+    }
+
+    private static String requireNonBlank(String value, String fieldName) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " must not be blank.");
+        }
+
+        return value.trim();
+    }
+
+    private static String requireNullableNonBlank(String value, String fieldName) {
+        if (value != null && value.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " must not be blank when present.");
+        }
+
+        return value == null ? null : value.trim();
     }
 
     @Override

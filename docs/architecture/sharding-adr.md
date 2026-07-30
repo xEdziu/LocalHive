@@ -6,6 +6,8 @@ Proposed
 
 M17 implementation note: the domain foundation now includes `ExecutionGroup` persistence, nullable group metadata on `WorkExecution`, and read-only admin group APIs. Sharded creation, scheduling, reconciliation, merge/reduce, group cancellation, Agent changes, and frontend UI remain future work.
 
+M18 implementation note: the first create and scheduling foundation now includes `POST /api/admin/execution-groups`, Docker `commandTemplate` expansion, `SHARD` child execution creation, initial scheduling, and event-driven wave scheduling after terminal child reports. M18 supports only `mergeMode = NONE`; merge/reduce, manual reconcile, background scheduling, group cancellation, Agent changes, Docker executor changes, and frontend UI remain future work.
+
 ## Context
 
 LocalHive already has production foundations for Docker workload execution:
@@ -385,11 +387,11 @@ The first scheduling foundation can be event-driven:
 1. Group creation creates N queued child executions.
 2. Initial scheduling assigns as many child executions as eligible workers allow.
 3. When a child reaches terminal state, reconciliation assigns more queued children if capacity exists.
-4. Optional manual reconcile can repair missed scheduling events.
+4. Optional manual reconcile can repair missed scheduling events in a future milestone.
 
 The scheduler should preserve one active execution per worker and should use the same worker eligibility semantics as M13.
 
-No background daemon is required as a first decision. A background scheduler may be added later if event-driven and manual reconcile are not enough.
+M18 implements steps 1-3 without a background daemon or manual reconcile endpoint. A background scheduler may be added later if event-driven scheduling is not enough.
 
 ## Merge / Reduce Model
 
@@ -501,12 +503,13 @@ The Agent remains compatible because every shard is still a normal claimed `Work
 
 ## Current Limitations
 
-- No sharded execution creation exists yet.
-- No sharded create endpoint exists yet.
-- No scheduling or reconciliation code exists yet.
+- Sharded creation currently supports Docker workload shards only.
+- Scheduling currently runs only on group creation and after terminal child reports.
+- No manual reconcile endpoint exists yet.
+- No background scheduler exists yet.
 - No merge execution exists yet.
 - No group cancel endpoint exists yet.
-- No Agent changes exist or are required for the proposed shard model.
+- No Agent changes exist or are required for the current shard model.
 - No frontend UI exists.
 - No GPU support is introduced.
 - No WebSocket, SOAP, Minecraft lifecycle, or research telemetry is introduced.
