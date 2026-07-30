@@ -45,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("12");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("13");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -55,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(12);
+        assertThat(appliedMigrationCount).isEqualTo(13);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -75,6 +75,7 @@ class LocalhiveBackendApplicationTests {
                 "work_definitions",
                 "work_definition_versions",
                 "work_instances",
+                "execution_groups",
                 "work_executions",
                 "execution_assignments",
                 "execution_attempts",
@@ -154,6 +155,10 @@ class LocalhiveBackendApplicationTests {
                         "resolved_required_cpu_cores",
                         "resolved_gpu_required",
                         "display_name_snapshot",
+                        "execution_group_id",
+                        "group_role",
+                        "shard_index",
+                        "shard_count",
                         "failure_code",
                         "failure_message"
                 );
@@ -173,7 +178,46 @@ class LocalhiveBackendApplicationTests {
                         "work_executions_resolved_required_cpu_cores_check",
                         "work_executions_lifecycle_timestamp_check",
                         "work_executions_failure_fields_check",
-                        "work_executions_display_name_snapshot_check"
+                        "work_executions_display_name_snapshot_check",
+                        "work_executions_group_role_check",
+                        "work_executions_group_metadata_check"
+                );
+
+        List<String> executionGroupColumns = jdbcTemplate.queryForList(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'execution_groups'",
+                String.class
+        );
+        assertThat(executionGroupColumns)
+                .contains(
+                        "id",
+                        "display_name",
+                        "status",
+                        "merge_mode",
+                        "failure_policy",
+                        "shard_count",
+                        "created_at",
+                        "updated_at",
+                        "completed_at",
+                        "cancelled_at",
+                        "failure_code",
+                        "failure_message"
+                );
+
+        List<String> executionGroupCheckConstraints = jdbcTemplate.queryForList("""
+                select constraint_name
+                from information_schema.table_constraints
+                where table_schema = 'public'
+                  and table_name = 'execution_groups'
+                  and constraint_type = 'CHECK'
+                """, String.class);
+        assertThat(executionGroupCheckConstraints)
+                .contains(
+                        "execution_groups_display_name_check",
+                        "execution_groups_status_check",
+                        "execution_groups_merge_mode_check",
+                        "execution_groups_failure_policy_check",
+                        "execution_groups_shard_count_check",
+                        "execution_groups_failure_fields_check"
                 );
 
         List<String> executionAssignmentColumns = jdbcTemplate.queryForList(

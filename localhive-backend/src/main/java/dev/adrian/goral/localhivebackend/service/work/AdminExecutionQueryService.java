@@ -161,6 +161,10 @@ public class AdminExecutionQueryService {
                 version.getExecutorContractVersion(),
                 definition.getLogicalIdentifier(),
                 version.getVersionNumber(),
+                execution.getExecutionGroupId(),
+                execution.getGroupRole() == null ? null : execution.getGroupRole().name(),
+                execution.getShardIndex(),
+                execution.getShardCount(),
                 assignment == null ? null : assignment.getWorker().getId(),
                 assignment == null ? null : assignment.getWorker().getHostname(),
                 execution.getCreatedAt(),
@@ -186,6 +190,12 @@ public class AdminExecutionQueryService {
                 execution.getStatus().name(),
                 version.getExecutorId(),
                 version.getExecutorContractVersion(),
+                new AdminExecutionDetailResponseDto.GroupMetadataDto(
+                        execution.getExecutionGroupId(),
+                        execution.getGroupRole() == null ? null : execution.getGroupRole().name(),
+                        execution.getShardIndex(),
+                        execution.getShardCount()
+                ),
                 new AdminExecutionDetailResponseDto.WorkDefinitionDto(
                         definition.getId(),
                         version.getId(),

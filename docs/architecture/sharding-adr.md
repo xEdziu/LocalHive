@@ -4,6 +4,8 @@
 
 Proposed
 
+M17 implementation note: the domain foundation now includes `ExecutionGroup` persistence, nullable group metadata on `WorkExecution`, and read-only admin group APIs. Sharded creation, scheduling, reconciliation, merge/reduce, group cancellation, Agent changes, and frontend UI remain future work.
+
 ## Context
 
 LocalHive already has production foundations for Docker workload execution:
@@ -499,8 +501,7 @@ The Agent remains compatible because every shard is still a normal claimed `Work
 
 ## Current Limitations
 
-- No `ExecutionGroup` entity exists yet.
-- No sharding migrations exist yet.
+- No sharded execution creation exists yet.
 - No sharded create endpoint exists yet.
 - No scheduling or reconciliation code exists yet.
 - No merge execution exists yet.

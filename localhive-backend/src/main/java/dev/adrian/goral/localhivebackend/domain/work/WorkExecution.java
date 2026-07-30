@@ -1,6 +1,7 @@
 package dev.adrian.goral.localhivebackend.domain.work;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionGroupRole;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
 import jakarta.persistence.AttributeOverride;
 import jakarta.persistence.AttributeOverrides;
@@ -51,6 +52,21 @@ public class WorkExecution {
 
     @Column(name = "display_name_snapshot", nullable = false, length = WorkExecutionDisplayName.MAX_LENGTH, updatable = false)
     private String displayNameSnapshot;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "execution_group_id")
+    @ToString.Exclude
+    private ExecutionGroup executionGroup;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "group_role")
+    private WorkExecutionGroupRole groupRole;
+
+    @Column(name = "shard_index")
+    private Integer shardIndex;
+
+    @Column(name = "shard_count")
+    private Integer shardCount;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -154,6 +170,41 @@ public class WorkExecution {
         );
     }
 
+    public void attachToGroupAsShard(ExecutionGroup executionGroup, int shardIndex, int shardCount) {
+        requireStandaloneGroupMetadata();
+        ExecutionGroup validExecutionGroup = Objects.requireNonNull(
+                executionGroup,
+                "executionGroup must not be null."
+        );
+        if (shardCount < 1) {
+            throw new IllegalArgumentException("shardCount must be greater than 0.");
+        }
+        if (shardIndex < 0 || shardIndex >= shardCount) {
+            throw new IllegalArgumentException("shardIndex must be between 0 and shardCount - 1.");
+        }
+
+        this.executionGroup = validExecutionGroup;
+        this.groupRole = WorkExecutionGroupRole.SHARD;
+        this.shardIndex = shardIndex;
+        this.shardCount = shardCount;
+    }
+
+    public void attachToGroupAsMerge(ExecutionGroup executionGroup, Integer shardCount) {
+        requireStandaloneGroupMetadata();
+        ExecutionGroup validExecutionGroup = Objects.requireNonNull(
+                executionGroup,
+                "executionGroup must not be null."
+        );
+        if (shardCount != null && shardCount < 1) {
+            throw new IllegalArgumentException("shardCount must be greater than 0 when present.");
+        }
+
+        this.executionGroup = validExecutionGroup;
+        this.groupRole = WorkExecutionGroupRole.MERGE;
+        this.shardIndex = null;
+        this.shardCount = shardCount;
+    }
+
     public void markAssigned(LocalDateTime assignedAt) {
         requireStatus(WorkExecutionStatus.QUEUED, "mark execution as assigned");
         this.assignedAt = requireTimestamp(assignedAt, "assignedAt");
@@ -225,6 +276,10 @@ public class WorkExecution {
         return resolvedConfigurationSnapshot.deepCopy();
     }
 
+    public UUID getExecutionGroupId() {
+        return executionGroup == null ? null : executionGroup.getId();
+    }
+
     private void requireStatus(WorkExecutionStatus expectedStatus, String action) {
         if (status != expectedStatus) {
             throw invalidTransition(action);
@@ -243,6 +298,12 @@ public class WorkExecution {
 
     private IllegalStateException invalidTransition(String action) {
         return new IllegalStateException("Cannot " + action + " from status " + status + ".");
+    }
+
+    private void requireStandaloneGroupMetadata() {
+        if (executionGroup != null || groupRole != null || shardIndex != null || shardCount != null) {
+            throw new IllegalStateException("Execution group metadata is already set.");
+        }
     }
 
     private static void requireInstanceMatchesDefinitionVersion(WorkDefinitionVersion definitionVersion,

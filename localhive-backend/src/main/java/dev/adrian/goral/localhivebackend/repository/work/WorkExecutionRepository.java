@@ -74,4 +74,56 @@ public interface WorkExecutionRepository extends JpaRepository<WorkExecution, UU
             WHERE execution.id = :executionId
             """)
     Optional<WorkExecution> findAdminExecutionById(@Param("executionId") UUID executionId);
+
+    @EntityGraph(attributePaths = {"definitionVersion", "definitionVersion.definition", "instance", "executionGroup"})
+    @Query("""
+            SELECT execution
+            FROM WorkExecution execution
+            WHERE execution.executionGroup.id = :executionGroupId
+            ORDER BY execution.createdAt DESC, execution.id DESC
+            """)
+    List<WorkExecution> findAdminExecutionsByExecutionGroupId(
+            @Param("executionGroupId") UUID executionGroupId
+    );
+
+    @Query("""
+            SELECT execution.executionGroup.id AS executionGroupId,
+                   execution.status AS status,
+                   COUNT(execution) AS executionCount
+            FROM WorkExecution execution
+            WHERE execution.executionGroup.id IN :executionGroupIds
+            GROUP BY execution.executionGroup.id, execution.status
+            """)
+    List<ExecutionGroupStatusCountProjection> countStatusesByExecutionGroupIds(
+            @Param("executionGroupIds") Collection<UUID> executionGroupIds
+    );
+
+    @Query("""
+            SELECT execution.status AS status,
+                   COUNT(execution) AS executionCount
+            FROM WorkExecution execution
+            WHERE execution.executionGroup.id = :executionGroupId
+            GROUP BY execution.status
+            """)
+    List<ExecutionStatusCountProjection> countStatusesByExecutionGroupId(
+            @Param("executionGroupId") UUID executionGroupId
+    );
+
+    long countByExecutionGroup_Id(UUID executionGroupId);
+
+    interface ExecutionGroupStatusCountProjection {
+
+        UUID getExecutionGroupId();
+
+        WorkExecutionStatus getStatus();
+
+        Long getExecutionCount();
+    }
+
+    interface ExecutionStatusCountProjection {
+
+        WorkExecutionStatus getStatus();
+
+        Long getExecutionCount();
+    }
 }

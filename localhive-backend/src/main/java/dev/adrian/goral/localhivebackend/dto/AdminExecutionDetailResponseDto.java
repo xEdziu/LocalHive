@@ -9,6 +9,7 @@ public record AdminExecutionDetailResponseDto(
         String status,
         String executorId,
         int executorContractVersion,
+        GroupMetadataDto groupMetadata,
         WorkDefinitionDto workDefinition,
         WorkInstanceDto workInstance,
         AssignmentDto assignment,
@@ -29,6 +30,14 @@ public record AdminExecutionDetailResponseDto(
     public record WorkInstanceDto(
             UUID instanceId,
             String displayName
+    ) {
+    }
+
+    public record GroupMetadataDto(
+            UUID executionGroupId,
+            String groupRole,
+            Integer shardIndex,
+            Integer shardCount
     ) {
     }
 

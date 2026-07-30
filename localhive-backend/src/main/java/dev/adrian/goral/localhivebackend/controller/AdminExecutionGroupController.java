@@ -1,0 +1,109 @@
+package dev.adrian.goral.localhivebackend.controller;
+
+import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupStatus;
+import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupChildExecutionResponseDto;
+import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupDetailResponseDto;
+import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupListResponseDto;
+import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupQueryService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/admin/execution-groups")
+@RequiredArgsConstructor
+public class AdminExecutionGroupController {
+
+    private static final int DEFAULT_LIMIT = 50;
+    private static final int DEFAULT_OFFSET = 0;
+
+    private final AdminExecutionGroupQueryService queryService;
+
+    @GetMapping
+    public ResponseEntity<AdminExecutionGroupListResponseDto> listGroups(
+            @RequestParam(required = false) String limit,
+            @RequestParam(required = false) String offset,
+            @RequestParam(required = false) String status
+    ) {
+        try {
+            return ResponseEntity.ok(queryService.listGroups(
+                    parseLimit(limit),
+                    parseOffset(offset),
+                    parseStatus(status)
+            ));
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
+
+    @GetMapping("/{executionGroupId}")
+    public ResponseEntity<AdminExecutionGroupDetailResponseDto> getGroup(@PathVariable UUID executionGroupId) {
+        return queryService.getGroup(executionGroupId)
+                .map(ResponseEntity::ok)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Execution group not found."));
+    }
+
+    @GetMapping("/{executionGroupId}/executions")
+    public ResponseEntity<List<AdminExecutionGroupChildExecutionResponseDto>> listChildExecutions(
+            @PathVariable UUID executionGroupId
+    ) {
+        return queryService.listChildExecutions(executionGroupId)
+                .map(ResponseEntity::ok)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Execution group not found."));
+    }
+
+    private static int parseLimit(String rawLimit) {
+        if (rawLimit == null) {
+            return DEFAULT_LIMIT;
+        }
+        if (rawLimit.isBlank()) {
+            throw new IllegalArgumentException("limit must not be blank.");
+        }
+
+        try {
+            return Integer.parseInt(rawLimit);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("limit must be a whole number.");
+        }
+    }
+
+    private static int parseOffset(String rawOffset) {
+        if (rawOffset == null) {
+            return DEFAULT_OFFSET;
+        }
+        if (rawOffset.isBlank()) {
+            throw new IllegalArgumentException("offset must not be blank.");
+        }
+
+        try {
+            return Integer.parseInt(rawOffset);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("offset must be a whole number.");
+        }
+    }
+
+    private static ExecutionGroupStatus parseStatus(String rawStatus) {
+        if (rawStatus == null) {
+            return null;
+        }
+        if (rawStatus.isBlank()) {
+            throw new IllegalArgumentException("status must not be blank.");
+        }
+
+        try {
+            return ExecutionGroupStatus.valueOf(rawStatus.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Unknown execution group status: " + rawStatus.trim());
+        }
+    }
+}

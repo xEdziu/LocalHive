@@ -17,6 +17,7 @@ localhive-backend/src/main/resources/db/migration/V9__add_execution_artifacts.sq
 localhive-backend/src/main/resources/db/migration/V10__add_execution_display_name_snapshot.sql
 localhive-backend/src/main/resources/db/migration/V11__add_worker_capabilities.sql
 localhive-backend/src/main/resources/db/migration/V12__allow_admin_cancelled_execution_reason.sql
+localhive-backend/src/main/resources/db/migration/V13__add_execution_groups.sql
 ```
 
 The baseline contains only the schema used by the current implementation. V2 migrates the previous combined Worker status into independent approval, connection, and availability dimensions. V3 adds Work Definition identity and immutable version persistence. V4 adds Work Instance persistence, configuration overrides, and relational resource defaults/overrides. V5 adds Work Execution lifecycle persistence with resolved configuration and resource snapshots. V6 adds one Master-side execution assignment per execution and one concrete execution attempt once an assigned execution starts running. Metrics, scheduler queues, and compute-grid runtime tables are intentionally excluded until those domains are designed and implemented.
@@ -25,6 +26,7 @@ V8 adds generic artifact metadata for workspace packages. V9 adds execution outp
 V10 adds `work_executions.display_name_snapshot` for stable human-readable execution display. It is a required, nonblank `VARCHAR(255)` value and is documented in [Execution Display Metadata](execution-display-metadata.md).
 V11 adds `worker_capabilities`, a latest-snapshot table for safe Agent capability metadata reported through worker heartbeat. It does not add capability history, scheduler behavior, Docker policy synchronization, or capability-aware worker selection.
 V12 adjusts `work_executions` lifecycle and failure-field constraints so admin-side cancellation can store `completed_at`, `cancelled_at`, `ADMIN_CANCELLED`, and a safe cancellation message. It preserves compatibility with older cancellation semantics where needed and does not add a table.
+V13 adds `execution_groups` and nullable group metadata on `work_executions` for future sharding. It does not create sharded executions, scheduling, reconciliation, merge/reduce, group cancel, Agent changes, Docker executor changes, or frontend UI.
 
 ## Integration Tests
 
@@ -45,6 +47,7 @@ No manually running LocalHive PostgreSQL instance is required for tests. Testcon
 | `work_definitions` | Stable logical identities for local or imported work definitions. |
 | `work_definition_versions` | Immutable content versions for work definitions, including approval state. |
 | `work_instances` | User-configured instances pinned to one immutable work definition version. |
+| `execution_groups` | Group-level metadata for future sharded executions. |
 | `work_executions` | Execution lifecycle records created from an approved definition version or enabled work instance. |
 | `execution_assignments` | Master-side decision assigning one work execution to one eligible worker, including worker claim lease metadata. |
 | `execution_attempts` | Concrete runtime attempt for an assigned execution; currently limited to attempt number `1`. |
@@ -137,17 +140,36 @@ erDiagram
         timestamp created_at
         UUID definition_version_id FK
         string display_name_snapshot
+        UUID execution_group_id FK
         timestamp expired_at
         string failure_code
         string failure_message
+        string group_role
         UUID instance_id FK
         timestamp queued_at
         jsonb resolved_configuration_snapshot
         boolean resolved_gpu_required
         int resolved_required_cpu_cores
         int resolved_required_ram_mb
+        int shard_count
+        int shard_index
         timestamp started_at
         string status
+    }
+
+    EXECUTION_GROUPS {
+        UUID id PK
+        timestamp cancelled_at
+        timestamp completed_at
+        timestamp created_at
+        string display_name
+        string failure_code
+        string failure_message
+        string failure_policy
+        string merge_mode
+        int shard_count
+        string status
+        timestamp updated_at
     }
 
     EXECUTION_ASSIGNMENTS {
@@ -242,6 +264,7 @@ erDiagram
     GAME_TEMPLATES ||--o{ SERVER_INSTANCES : templates
     WORK_DEFINITIONS ||--o{ WORK_DEFINITION_VERSIONS : versions
     WORK_DEFINITION_VERSIONS ||--o{ WORK_INSTANCES : instances
+    EXECUTION_GROUPS ||--o{ WORK_EXECUTIONS : groups
     WORK_DEFINITION_VERSIONS ||--o{ WORK_EXECUTIONS : executions
     WORK_INSTANCES ||--o{ WORK_EXECUTIONS : creates
     WORK_EXECUTIONS ||--o| EXECUTION_ASSIGNMENTS : assigned
@@ -269,7 +292,8 @@ erDiagram
 | `work_definitions` | Primary key on `id`; unique `logical_identifier`; check for lowercase logical identifier format; enum checks for `work_type` and `source_type`. |
 | `work_definition_versions` | Primary key on `id`; unique `(definition_id, version_number)`; foreign keys to `work_definitions(id)` and creator/reviewer `users(id)`; checks for version number, executor contract version, JSON object executor configuration, non-negative default RAM/CPU resources, lowercase SHA-256 checksum, approval status, and approval review metadata. |
 | `work_instances` | Primary key on `id`; foreign key to `work_definition_versions(id)`; checks for non-blank display name, JSON object configuration overrides, and non-negative nullable RAM/CPU resource overrides. |
-| `work_executions` | Primary key on `id`; foreign keys to `work_definition_versions(id)` and optional `work_instances(id)`; checks for lifecycle status values, nonblank display name snapshot, JSON object resolved configuration snapshot, non-negative resolved RAM/CPU resources, lifecycle timestamp consistency, and failure fields for failed or admin-cancelled executions. |
+| `execution_groups` | Primary key on `id`; enum checks for group status, merge mode, and failure policy; checks for nonblank display name, positive shard count, and nonblank nullable failure fields; indexes on `status` and `created_at`. |
+| `work_executions` | Primary key on `id`; foreign keys to `work_definition_versions(id)`, optional `work_instances(id)`, and optional `execution_groups(id)`; checks for lifecycle status values, nonblank display name snapshot, JSON object resolved configuration snapshot, non-negative resolved RAM/CPU resources, lifecycle timestamp consistency, failure fields for failed or admin-cancelled executions, and nullable group metadata consistency; indexes on group metadata. |
 | `execution_assignments` | Primary key on `id`; unique `execution_id`; foreign keys to `work_executions(id)` and `workers(id)`; check for assignment modes `AUTO`, `PREFER`, and `REQUIRE`; check that claim lease fields are either all null or all present; index on `worker_id`. |
 | `execution_attempts` | Primary key on `id`; unique `execution_id`; unique `(execution_id, attempt_number)`; foreign keys to `work_executions(id)` and `execution_assignments(id)`; check that `attempt_number = 1`; checks for attempt statuses and terminal timestamp/failure-field consistency. |
 | `artifacts` | Primary key on `id`; enum check for `WORKSPACE_PACKAGE` and `EXECUTION_OUTPUT`; checks for non-blank original filename and storage path, nullable non-blank content type, non-negative size, and 64-character SHA-256. |
@@ -322,6 +346,16 @@ The `resolved_configuration_snapshot` column stores the effective JSONB object a
 The `display_name_snapshot` column stores a stable human-readable name captured when the execution is created. It is `VARCHAR(255)`, required, and nonblank after trimming. It is for UI, logs, dashboards, and history views only; it is not used as a path, filename, command argument, authorization input, assignment input, or lease input. Display metadata is documented in [Execution Display Metadata](execution-display-metadata.md).
 
 Current lifecycle statuses are `QUEUED`, `ASSIGNED`, `CLAIMED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, and `EXPIRED`. V5 stores timestamps for those lifecycle transitions and minimal failure fields (`failure_code`, `failure_message`) for failed executions. V12 allows admin-style cancelled executions to store `completed_at`, `cancelled_at`, `ADMIN_CANCELLED`, and the cancellation message. The admin cancel behavior is documented in [Admin Execution Cancel API](admin-execution-cancel-api.md).
+
+V13 adds nullable group metadata for future sharding: `execution_group_id`, `group_role`, `shard_index`, and `shard_count`. Standalone executions keep all four fields null. `SHARD` children must have a group id, `shardIndex` from `0` to `shardCount - 1`, and positive `shardCount`. `MERGE` children must have a group id and may have `shardIndex = null`. The read-only admin API is documented in [Admin Execution Groups API](admin-execution-groups-api.md).
+
+## Execution Groups
+
+`execution_groups` stores group-level metadata for future sharded execution requests. Current group statuses are `CREATED`, `SCHEDULING`, `RUNNING`, `MERGING`, `SUCCEEDED`, `PARTIALLY_FAILED`, `FAILED`, `CANCELLING`, `CANCELLED`, and `EXPIRED`.
+
+Merge modes are `NONE`, `MASTER`, and `AGENT`. Failure policies are `FAIL_FAST` and `ALLOW_PARTIAL`.
+
+M17 is a domain foundation only. It adds persistence and read-only admin APIs for groups, but it does not add sharded create, scheduling, reconciliation, merge/reduce, group cancel, Agent protocol changes, Docker executor changes, or frontend UI.
 
 ## Execution Assignments and Attempts
 

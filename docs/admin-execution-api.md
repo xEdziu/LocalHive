@@ -62,6 +62,10 @@ Response shape:
       "executorContractVersion": 1,
       "workDefinitionLogicalId": "localhive.docker.workload",
       "workDefinitionVersion": 1,
+      "executionGroupId": null,
+      "groupRole": null,
+      "shardIndex": null,
+      "shardCount": null,
       "workerId": "00000000-0000-0000-0000-000000000000",
       "workerHostname": "AMG-NORTH",
       "createdAt": "2026-07-19T19:21:57.681129",
@@ -116,6 +120,12 @@ Response shape:
   "status": "SUCCEEDED",
   "executorId": "localhive.docker.workload",
   "executorContractVersion": 1,
+  "groupMetadata": {
+    "executionGroupId": null,
+    "groupRole": null,
+    "shardIndex": null,
+    "shardCount": null
+  },
   "workDefinition": {
     "definitionId": "00000000-0000-0000-0000-000000000000",
     "definitionVersionId": "00000000-0000-0000-0000-000000000000",
@@ -154,6 +164,8 @@ Response shape:
 ```
 
 The detail response intentionally does not include `leaseExpiresAt`. It is technical worker claim/lease protocol metadata and is not part of the admin execution response. Raw configuration snapshots are also not exposed by this API.
+
+M17 adds nullable group metadata for future sharding. Standalone executions return `null` group metadata. Group read APIs are documented in [Admin Execution Groups API](admin-execution-groups-api.md).
 
 ## Artifact Endpoint Relationship
 
