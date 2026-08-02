@@ -13,6 +13,7 @@ import dev.adrian.goral.localhivebackend.domain.WorkerCapabilities;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerApprovalStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerAvailabilityStatus;
 import dev.adrian.goral.localhivebackend.domain.enums.WorkerConnectionStatus;
+import dev.adrian.goral.localhivebackend.domain.work.ExecutionAssignment;
 import dev.adrian.goral.localhivebackend.domain.work.ExecutionGroup;
 import dev.adrian.goral.localhivebackend.domain.work.ResourceRequest;
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinitionVersion;
@@ -21,6 +22,7 @@ import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionAssignmentMo
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupFailurePolicy;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupMergeMode;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupStatus;
+import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
 import dev.adrian.goral.localhivebackend.repository.UserRepository;
 import dev.adrian.goral.localhivebackend.repository.WorkerCapabilitiesRepository;
@@ -1185,8 +1187,10 @@ class AdminExecutionGroupControllerIntegrationTest {
                 null,
                 "FAIL_FAST"
         );
-        reportFailed(failFastWorker, claimNext(failFastWorker));
-        reportSucceeded(failFastWorker, claimNext(failFastWorker));
+        ClaimedWorkerShard failedShard = claimAssignedChild(failFastGroupId, failFastWorker);
+        reportFailed(failedShard.worker(), failedShard.claimedShard());
+        ClaimedWorkerShard succeededShard = claimAssignedChild(failFastGroupId, failFastWorker);
+        reportSucceeded(succeededShard.worker(), succeededShard.claimedShard());
         assertGroupCounts(failFastGroupId, "FAILED", 0, 2, 0, 0);
     }
 
@@ -1203,8 +1207,10 @@ class AdminExecutionGroupControllerIntegrationTest {
                 null,
                 "ALLOW_PARTIAL"
         );
-        reportFailed(partialWorker, claimNext(partialWorker));
-        reportSucceeded(partialWorker, claimNext(partialWorker));
+        ClaimedWorkerShard failedShard = claimAssignedChild(partialGroupId, partialWorker);
+        reportFailed(failedShard.worker(), failedShard.claimedShard());
+        ClaimedWorkerShard succeededShard = claimAssignedChild(partialGroupId, partialWorker);
+        reportSucceeded(succeededShard.worker(), succeededShard.claimedShard());
         assertGroupCounts(partialGroupId, "PARTIALLY_FAILED", 0, 2, 0, 0);
     }
 
@@ -1747,6 +1753,29 @@ class AdminExecutionGroupControllerIntegrationTest {
         );
     }
 
+    private ClaimedWorkerShard claimAssignedChild(UUID executionGroupId, WorkerCredentials... candidates) throws Exception {
+        WorkExecution assignedExecution = childExecutions(executionGroupId).stream()
+                .filter(execution -> execution.getStatus() == WorkExecutionStatus.ASSIGNED)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "Expected an ASSIGNED child execution for group " + executionGroupId + "."
+                ));
+        ExecutionAssignment assignment = assignmentRepository.findByExecution(assignedExecution)
+                .orElseThrow(() -> new AssertionError(
+                        "Expected assignment for execution " + assignedExecution.getId() + "."
+                ));
+        WorkerCredentials assignedWorker = List.of(candidates).stream()
+                .filter(candidate -> candidate.worker().getId().equals(assignment.getWorker().getId()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "Missing credentials for assigned worker " + assignment.getWorker().getId() + "."
+                ));
+
+        ClaimedShard claimedShard = claimNext(assignedWorker);
+        assertThat(claimedShard.executionId()).isEqualTo(assignedExecution.getId());
+        return new ClaimedWorkerShard(assignedWorker, claimedShard);
+    }
+
     private void reportSucceeded(WorkerCredentials worker, ClaimedShard claimedShard) throws Exception {
         reportRunning(worker, claimedShard);
         reportSucceededAfterRunning(worker, claimedShard);
@@ -2244,6 +2273,7 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .approvalStatus(WorkerApprovalStatus.APPROVED)
                 .connectionStatus(WorkerConnectionStatus.ONLINE)
                 .availabilityStatus(WorkerAvailabilityStatus.AVAILABLE)
+                .lastHeartbeatAt(LocalDateTime.now())
                 .apiKeyHash(passwordEncoder.encode(rawApiKey))
                 .build());
         return new WorkerCredentials(worker, rawApiKey);
@@ -2284,5 +2314,8 @@ class AdminExecutionGroupControllerIntegrationTest {
     }
 
     private record ClaimedShard(UUID executionId, String leaseToken) {
+    }
+
+    private record ClaimedWorkerShard(WorkerCredentials worker, ClaimedShard claimedShard) {
     }
 }
