@@ -413,11 +413,9 @@ class AdminExecutionGroupControllerIntegrationTest {
     void shouldReturnOnlyChildExecutionsForExecutionGroup() throws Exception {
         WorkDefinitionVersion version = noOpVersion();
         ExecutionGroup group = createGroup("Children group", 2);
-        Worker firstWorker = createApprovedWorker("children-first");
-        Worker secondWorker = createApprovedWorker("children-second");
-        WorkExecution firstChild = createShardExecution(group, version, firstWorker, 0, 2, "First child");
+        WorkExecution firstChild = createQueuedShardExecution(group, version, 0, 2, "First child");
         Thread.sleep(5);
-        WorkExecution secondChild = createShardExecution(group, version, secondWorker, 1, 2, "Second child");
+        WorkExecution secondChild = createQueuedShardExecution(group, version, 1, 2, "Second child");
         WorkExecution standalone = createOneOff(version, "Standalone execution");
 
         String response = mockMvc.perform(get(
@@ -429,10 +427,10 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(2)))
                 .andExpect(jsonPath("$[0].executionId").value(secondChild.getId().toString()))
-                .andExpect(jsonPath("$[0].status").value("ASSIGNED"))
-                .andExpect(jsonPath("$[0].assignmentMode").value("REQUIRE"))
-                .andExpect(jsonPath("$[0].workerId").value(secondWorker.getId().toString()))
-                .andExpect(jsonPath("$[0].workerHostname").value(secondWorker.getHostname()))
+                .andExpect(jsonPath("$[0].status").value("QUEUED"))
+                .andExpect(jsonPath("$[0].assignmentMode").value(nullValue()))
+                .andExpect(jsonPath("$[0].workerId").value(nullValue()))
+                .andExpect(jsonPath("$[0].workerHostname").value(nullValue()))
                 .andExpect(jsonPath("$[0].groupRole").value("SHARD"))
                 .andExpect(jsonPath("$[0].shardIndex").value(1))
                 .andExpect(jsonPath("$[0].shardCount").value(2))
@@ -1544,6 +1542,16 @@ class AdminExecutionGroupControllerIntegrationTest {
                 BASE_TIME.plusSeconds(shardIndex)
         );
         return executionRepository.findById(execution.getId()).orElseThrow();
+    }
+
+    private WorkExecution createQueuedShardExecution(ExecutionGroup group,
+                                                     WorkDefinitionVersion version,
+                                                     int shardIndex,
+                                                     int shardCount,
+                                                     String displayName) {
+        WorkExecution execution = createOneOff(version, displayName);
+        execution.attachToGroupAsShard(group, shardIndex, shardCount);
+        return executionRepository.saveAndFlush(execution);
     }
 
     private WorkExecution createOneOff(WorkDefinitionVersion version, String displayName) {
