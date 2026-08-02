@@ -27,7 +27,7 @@ class ExecutionGroupMigrationTest {
     static final PostgreSQLContainer postgres = new PostgreSQLContainer(POSTGRES_IMAGE);
 
     @Test
-    @DisplayName("V13 adds execution groups and nullable WorkExecution group metadata")
+    @DisplayName("V13/V14 add execution groups, nullable WorkExecution group metadata, and merge plans")
     void shouldAddExecutionGroupsAndNullableExecutionMetadata() throws SQLException {
         flyway("12").migrate();
 
@@ -41,7 +41,7 @@ class ExecutionGroupMigrationTest {
         Flyway flyway = flyway(null);
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("13");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("14");
 
         try (Connection connection = connection()) {
             assertThat(tables(connection)).contains("execution_groups");
@@ -86,12 +86,28 @@ class ExecutionGroupMigrationTest {
                             "idx_work_executions_execution_group_id",
                             "idx_work_executions_execution_group_role_shard_index"
                     );
+            assertThat(tables(connection)).contains("execution_group_merge_plans");
+            assertThat(columns(connection, "execution_group_merge_plans"))
+                    .contains(
+                            "execution_group_id",
+                            "definition_version_id",
+                            "configuration_template",
+                            "created_at"
+                    );
+            assertThat(foreignKeys(connection, "execution_group_merge_plans"))
+                    .contains(
+                            "fk_execution_group_merge_plans_execution_group_id",
+                            "fk_execution_group_merge_plans_definition_version_id"
+                    );
+            assertThat(checkConstraints(connection, "execution_group_merge_plans"))
+                    .contains("execution_group_merge_plans_configuration_template_object_check");
             assertThat(groupMetadata(connection, standaloneExecutionId))
                     .containsExactly(null, null, null, null);
 
             UUID executionGroupId = UUID.randomUUID();
             insertExecutionGroup(connection, executionGroupId, 2);
             insertShardExecution(connection, UUID.randomUUID(), versionId, executionGroupId, 0, 2);
+            insertMergePlan(connection, executionGroupId, versionId, "'{\"commandTemplate\":[\"sh\"]}'::jsonb");
 
             assertThatThrownBy(() -> insertExecutionGroup(connection, UUID.randomUUID(), 0))
                     .isInstanceOf(SQLException.class);
@@ -102,6 +118,14 @@ class ExecutionGroupMigrationTest {
                     executionGroupId,
                     2,
                     2
+            )).isInstanceOf(SQLException.class);
+            UUID invalidMergePlanGroupId = UUID.randomUUID();
+            insertExecutionGroup(connection, invalidMergePlanGroupId, 2);
+            assertThatThrownBy(() -> insertMergePlan(
+                    connection,
+                    invalidMergePlanGroupId,
+                    versionId,
+                    "'[]'::jsonb"
             )).isInstanceOf(SQLException.class);
         }
     }
@@ -263,6 +287,24 @@ class ExecutionGroupMigrationTest {
                                                     int shardIndex,
                                                     int shardCount) throws SQLException {
         insertGroupedExecution(connection, executionId, versionId, executionGroupId, "SHARD", shardIndex, shardCount);
+    }
+
+    private static void insertMergePlan(Connection connection,
+                                        UUID executionGroupId,
+                                        UUID versionId,
+                                        String configurationTemplateSql) throws SQLException {
+        try (var statement = connection.prepareStatement("""
+                insert into execution_group_merge_plans (
+                    execution_group_id,
+                    definition_version_id,
+                    configuration_template,
+                    created_at
+                ) values (?, ?, %s, current_timestamp)
+                """.formatted(configurationTemplateSql))) {
+            statement.setObject(1, executionGroupId);
+            statement.setObject(2, versionId);
+            statement.executeUpdate();
+        }
     }
 
     private static void insertGroupedExecution(Connection connection,

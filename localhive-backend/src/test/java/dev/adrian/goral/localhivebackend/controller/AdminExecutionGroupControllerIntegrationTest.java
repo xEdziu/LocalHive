@@ -1,10 +1,12 @@
 package dev.adrian.goral.localhivebackend.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jayway.jsonpath.JsonPath;
+import dev.adrian.goral.localhivebackend.domain.artifact.Artifact;
 import dev.adrian.goral.localhivebackend.domain.User;
 import dev.adrian.goral.localhivebackend.domain.Worker;
 import dev.adrian.goral.localhivebackend.domain.WorkerCapabilities;
@@ -26,11 +28,14 @@ import dev.adrian.goral.localhivebackend.repository.artifact.ArtifactRepository;
 import dev.adrian.goral.localhivebackend.repository.artifact.ExecutionArtifactRepository;
 import dev.adrian.goral.localhivebackend.repository.work.ExecutionAssignmentRepository;
 import dev.adrian.goral.localhivebackend.repository.work.ExecutionAttemptRepository;
+import dev.adrian.goral.localhivebackend.repository.work.ExecutionGroupMergePlanRepository;
 import dev.adrian.goral.localhivebackend.repository.work.ExecutionGroupRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkDefinitionRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkDefinitionVersionRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkExecutionRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkInstanceRepository;
+import dev.adrian.goral.localhivebackend.service.artifact.ArtifactManagementService;
+import dev.adrian.goral.localhivebackend.service.artifact.ArtifactStorageService;
 import dev.adrian.goral.localhivebackend.service.work.CreateOneOffExecutionCommand;
 import dev.adrian.goral.localhivebackend.service.work.DefinitionContentCommand;
 import dev.adrian.goral.localhivebackend.service.work.DefinitionManagementService;
@@ -45,6 +50,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
@@ -53,10 +59,19 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasSize;
@@ -65,13 +80,14 @@ import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @Testcontainers
-@SpringBootTest
+@SpringBootTest(properties = "localhive.artifacts.storage-root=target/test-artifacts/execution-groups")
 @AutoConfigureMockMvc
 class AdminExecutionGroupControllerIntegrationTest {
 
@@ -86,6 +102,9 @@ class AdminExecutionGroupControllerIntegrationTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -106,7 +125,16 @@ class AdminExecutionGroupControllerIntegrationTest {
     private WorkerExecutionReportService reportService;
 
     @Autowired
+    private ArtifactManagementService artifactManagementService;
+
+    @Autowired
+    private ArtifactStorageService artifactStorageService;
+
+    @Autowired
     private ExecutionGroupRepository groupRepository;
+
+    @Autowired
+    private ExecutionGroupMergePlanRepository mergePlanRepository;
 
     @Autowired
     private WorkDefinitionRepository definitionRepository;
@@ -150,6 +178,7 @@ class AdminExecutionGroupControllerIntegrationTest {
         attemptRepository.deleteAll();
         assignmentRepository.deleteAll();
         executionRepository.deleteAll();
+        mergePlanRepository.deleteAll();
         groupRepository.deleteAll();
         instanceRepository.deleteAll();
         versionRepository.deleteAll();
@@ -555,14 +584,28 @@ class AdminExecutionGroupControllerIntegrationTest {
                 "[\"sh\", \"/workspace/optimize.sh\", \"{{unknown}}\"]"
         )).andExpect(jsonPath("$.message").value("Unsupported commandTemplate placeholder: {{unknown}}"));
 
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+
         expectBadCreate(shardedCreateRequest(version.getId(), "Master merge", 2, "AUTO", null, "FAIL_FAST", "MASTER"))
-                .andExpect(jsonPath("$.message").value("Merge modes MASTER and AGENT are designed but not implemented in M18."));
+                .andExpect(jsonPath("$.message").value("MASTER mergeMode is designed but not implemented."));
 
         expectBadCreate(shardedCreateRequest(version.getId(), "Agent merge", 2, "AUTO", null, "FAIL_FAST", "AGENT"))
-                .andExpect(jsonPath("$.message").value("Merge modes MASTER and AGENT are designed but not implemented in M18."));
+                .andExpect(jsonPath("$.message").value("mergeConfigurationTemplate is required for AGENT mergeMode."));
+
+        expectBadCreate(shardedCreateRequestWithMergeConfiguration(
+                version.getId(),
+                "None with merge config",
+                2,
+                "AUTO",
+                null,
+                "FAIL_FAST",
+                "NONE",
+                baseMergeWorkspace.getId(),
+                "[\"sh\", \"/workspace/merge.sh\"]"
+        )).andExpect(jsonPath("$.message").value("mergeConfigurationTemplate must be absent when mergeMode is NONE."));
 
         expectBadCreate(shardedCreateRequest(version.getId(), "Require group", 2, "REQUIRE", null, "FAIL_FAST"))
-                .andExpect(jsonPath("$.message").value("REQUIRE assignmentMode is not supported for execution group creation in M18."));
+                .andExpect(jsonPath("$.message").value("REQUIRE assignmentMode is not supported for execution group creation."));
     }
 
     @Test
@@ -599,6 +642,53 @@ class AdminExecutionGroupControllerIntegrationTest {
                 null,
                 "FAIL_FAST",
                 "[\"sh\", \"/workspace/optimize.sh\", \"{{shardIndex\", \"{{shardCount}}\"]"
+        )).andExpect(jsonPath("$.message").value("Unsupported commandTemplate placeholder."));
+
+        assertThat(groupRepository.count()).isEqualTo(groupCount);
+        assertThat(executionRepository.count()).isEqualTo(executionCount);
+    }
+
+    @Test
+    void shouldRejectInvalidMergeCommandTemplateWithoutPersistingGroupOrChildren() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        long groupCount = groupRepository.count();
+        long executionCount = executionRepository.count();
+
+        expectBadCreate(shardedCreateRequestWithMergeConfiguration(
+                version.getId(),
+                "Empty merge command template",
+                2,
+                "AUTO",
+                null,
+                "FAIL_FAST",
+                "AGENT",
+                baseMergeWorkspace.getId(),
+                "[]"
+        )).andExpect(jsonPath("$.message").value("mergeConfigurationTemplate.commandTemplate must be a non-empty array."));
+
+        expectBadCreate(shardedCreateRequestWithMergeConfiguration(
+                version.getId(),
+                "Unsupported merge placeholder",
+                2,
+                "AUTO",
+                null,
+                "FAIL_FAST",
+                "AGENT",
+                baseMergeWorkspace.getId(),
+                "[\"sh\", \"/workspace/merge.sh\", \"{{unknown}}\"]"
+        )).andExpect(jsonPath("$.message").value("Unsupported commandTemplate placeholder: {{unknown}}"));
+
+        expectBadCreate(shardedCreateRequestWithMergeConfiguration(
+                version.getId(),
+                "Malformed merge placeholder",
+                2,
+                "AUTO",
+                null,
+                "FAIL_FAST",
+                "AGENT",
+                baseMergeWorkspace.getId(),
+                "[\"sh\", \"/workspace/merge.sh\", \"{{shardCount\"]"
         )).andExpect(jsonPath("$.message").value("Unsupported commandTemplate placeholder."));
 
         assertThat(groupRepository.count()).isEqualTo(groupCount);
@@ -825,6 +915,258 @@ class AdminExecutionGroupControllerIntegrationTest {
         assertGroupCounts(partialGroupId, "PARTIALLY_FAILED", 0, 2, 0, 0);
     }
 
+    @Test
+    void shouldCreateAgentMergeGroupWithoutMergeExecutionBeforeShardsFinish() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        Worker worker = createApprovedWorker("agent-initial");
+        storeDockerCapabilities(worker);
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups")
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(shardedCreateRequestWithMergeConfiguration(
+                                version.getId(),
+                                "Agent merge initial",
+                                2,
+                                "AUTO",
+                                null,
+                                "FAIL_FAST",
+                                "AGENT",
+                                baseMergeWorkspace.getId(),
+                                "[\"sh\", \"/workspace/merge.sh\", \"{{inputManifestPath}}\"]"
+                        ))
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("RUNNING"))
+                .andExpect(jsonPath("$.mergeMode").value("AGENT"))
+                .andExpect(jsonPath("$.totalExecutions").value(2))
+                .andExpect(jsonPath("$.childExecutionCounts.ASSIGNED").value(1))
+                .andExpect(jsonPath("$.childExecutionCounts.QUEUED").value(1))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminResponse(response);
+        UUID executionGroupId = UUID.fromString(JsonPath.read(response, "$.executionGroupId"));
+        assertThat(mergePlanRepository.findById(executionGroupId)).isPresent();
+        assertThat(executionRepository.findAdminExecutionsByExecutionGroupId(executionGroupId))
+                .hasSize(2)
+                .allSatisfy(child -> assertThat(child.getGroupRole().name()).isEqualTo("SHARD"));
+    }
+
+    @Test
+    void shouldCreateDerivedWorkspaceAndScheduleAgentMergeAfterSuccessfulShards() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        WorkerCredentials worker = createApprovedWorkerCredentials("agent-merge-success");
+        storeDockerCapabilities(worker.worker());
+        UUID executionGroupId = createAgentMergeGroup(
+                version.getId(),
+                "Agent merge success",
+                2,
+                "FAIL_FAST",
+                baseMergeWorkspace.getId()
+        );
+
+        ClaimedShard first = claimNext(worker);
+        reportSucceededWithOutput(worker, first, "result.json", "{\"score\":1}");
+        assertThat(mergeExecutions(executionGroupId)).isEmpty();
+
+        ClaimedShard second = claimNext(worker);
+        reportSucceededWithOutput(worker, second, "nested/summary.txt", "ok");
+
+        List<WorkExecution> merges = mergeExecutions(executionGroupId);
+        assertThat(merges).hasSize(1);
+        WorkExecution merge = merges.get(0);
+        assertThat(merge.getGroupRole().name()).isEqualTo("MERGE");
+        assertThat(merge.getShardIndex()).isNull();
+        assertThat(merge.getShardCount()).isEqualTo(2);
+        assertThat(merge.getStatus().name()).isEqualTo("ASSIGNED");
+        assertThat(merge.getDisplayNameSnapshot()).isEqualTo("Agent merge success merge");
+
+        JsonNode mergeConfiguration = merge.getResolvedConfigurationSnapshot();
+        assertThat(mergeConfiguration.get("command").get(0).asText()).isEqualTo("sh");
+        assertThat(mergeConfiguration.get("command").get(2).asText()).isEqualTo("/workspace/inputs/manifest.json");
+        UUID derivedWorkspaceId = UUID.fromString(mergeConfiguration.path("workspace").path("artifactId").asText());
+        assertThat(derivedWorkspaceId).isNotEqualTo(baseMergeWorkspace.getId());
+        assertThat(mergeConfiguration.path("workspace").path("mountPath").asText()).isEqualTo("/workspace");
+        assertThat(mergeConfiguration.path("workspace").path("readOnly").asBoolean()).isTrue();
+
+        Artifact derivedWorkspace = artifactRepository.findById(derivedWorkspaceId).orElseThrow();
+        Map<String, String> derivedEntries = readZipEntries(derivedWorkspace);
+        assertThat(derivedEntries.keySet()).contains(
+                "merge.sh",
+                "inputs/manifest.json",
+                "inputs/shards/0/result.json",
+                "inputs/shards/1/nested/summary.txt"
+        );
+        JsonNode manifest = objectMapper.readTree(derivedEntries.get("inputs/manifest.json"));
+        assertThat(manifest.path("executionGroupId").asText()).isEqualTo(executionGroupId.toString());
+        assertThat(manifest.path("shardCount").asInt()).isEqualTo(2);
+        assertThat(manifest.path("includedShardCount").asInt()).isEqualTo(2);
+        assertThat(manifest.toString())
+                .contains("/workspace/inputs/shards/0/result.json")
+                .contains("/workspace/inputs/shards/1/nested/summary.txt")
+                .doesNotContain("storagePath")
+                .doesNotContain("lease")
+                .doesNotContain("apiKey");
+
+        ClaimedShard mergeClaim = claimNext(worker);
+        assertThat(mergeClaim.executionId()).isEqualTo(merge.getId());
+        reportSucceeded(worker, mergeClaim);
+        assertGroupCounts(executionGroupId, "SUCCEEDED", 0, 3, 0, 0);
+    }
+
+    @Test
+    void shouldMarkAgentMergeGroupPartiallyFailedWhenPartialShardsAndMergeSucceeded() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        WorkerCredentials worker = createApprovedWorkerCredentials("agent-merge-partial");
+        storeDockerCapabilities(worker.worker());
+        UUID executionGroupId = createAgentMergeGroup(
+                version.getId(),
+                "Agent merge partial",
+                2,
+                "ALLOW_PARTIAL",
+                baseMergeWorkspace.getId()
+        );
+
+        reportFailed(worker, claimNext(worker));
+        reportSucceededWithOutput(worker, claimNext(worker), "partial.json", "{\"ok\":true}");
+
+        List<WorkExecution> merges = mergeExecutions(executionGroupId);
+        assertThat(merges).hasSize(1);
+        reportSucceeded(worker, claimNext(worker));
+        assertGroupCounts(executionGroupId, "PARTIALLY_FAILED", 0, 3, 0, 0);
+    }
+
+    @Test
+    void shouldFailAgentMergeGroupWithoutMergeWhenAllowPartialHasNoSuccessfulShards() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        WorkerCredentials worker = createApprovedWorkerCredentials("agent-merge-no-success");
+        storeDockerCapabilities(worker.worker());
+        UUID executionGroupId = createAgentMergeGroup(
+                version.getId(),
+                "Agent merge no successful shards",
+                2,
+                "ALLOW_PARTIAL",
+                baseMergeWorkspace.getId()
+        );
+
+        assertThat(mergeExecutions(executionGroupId)).isEmpty();
+        assertThat(executionRepository.findAdminExecutionsByExecutionGroupId(executionGroupId))
+                .hasSize(2)
+                .allSatisfy(child -> assertThat(child.getGroupRole().name()).isEqualTo("SHARD"));
+
+        reportFailed(worker, claimNext(worker));
+        reportFailed(worker, claimNext(worker));
+
+        String detailResponse = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}", executionGroupId)
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mergeMode").value("AGENT"))
+                .andExpect(jsonPath("$.failurePolicy").value("ALLOW_PARTIAL"))
+                .andExpect(jsonPath("$.status").value("FAILED"))
+                .andExpect(jsonPath("$.totalExecutions").value(2))
+                .andExpect(jsonPath("$.activeExecutions").value(0))
+                .andExpect(jsonPath("$.terminalExecutions").value(2))
+                .andExpect(jsonPath("$.childExecutionCounts.FAILED").value(2))
+                .andExpect(jsonPath("$.completedAt").exists())
+                .andExpect(jsonPath("$.failureCode").value(notNullValue()))
+                .andExpect(jsonPath("$.failureMessage").value(notNullValue()))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertSafeAdminResponse(detailResponse);
+
+        String childrenResponse = mockMvc.perform(get(
+                        "/api/admin/execution-groups/{executionGroupId}/executions",
+                        executionGroupId
+                )
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[0].groupRole").value("SHARD"))
+                .andExpect(jsonPath("$[1].groupRole").value("SHARD"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertSafeAdminResponse(childrenResponse);
+        assertThat(childrenResponse).doesNotContain("\"groupRole\":\"MERGE\"");
+        assertThat(mergeExecutions(executionGroupId)).isEmpty();
+    }
+
+    @Test
+    void shouldFailAgentMergeGroupWithoutMergeForFailFastShardFailure() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        WorkerCredentials worker = createApprovedWorkerCredentials("agent-merge-fail-fast");
+        storeDockerCapabilities(worker.worker());
+        UUID executionGroupId = createAgentMergeGroup(
+                version.getId(),
+                "Agent merge fail fast",
+                2,
+                "FAIL_FAST",
+                baseMergeWorkspace.getId()
+        );
+
+        reportFailed(worker, claimNext(worker));
+
+        assertGroupCounts(executionGroupId, "FAILED", 0, 1, 0, 1);
+        assertThat(mergeExecutions(executionGroupId)).isEmpty();
+    }
+
+    @Test
+    void shouldLeaveAgentMergeQueuedWhenNoWorkerIsEligibleForMerge() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        WorkerCredentials worker = createApprovedWorkerCredentials("agent-merge-no-worker");
+        storeDockerCapabilities(worker.worker());
+        UUID executionGroupId = createAgentMergeGroup(
+                version.getId(),
+                "Agent merge no worker",
+                1,
+                "FAIL_FAST",
+                baseMergeWorkspace.getId()
+        );
+
+        ClaimedShard shard = claimNext(worker);
+        reportRunning(worker, shard);
+        workerCapabilitiesRepository.deleteById(worker.worker().getId());
+        reportSucceededAfterRunning(worker, shard);
+
+        List<WorkExecution> merges = mergeExecutions(executionGroupId);
+        assertThat(merges).hasSize(1);
+        assertThat(merges.get(0).getStatus().name()).isEqualTo("QUEUED");
+        assertGroupCounts(executionGroupId, "MERGING", 0, 1, 0, 1);
+    }
+
+    @Test
+    void shouldFailAgentMergeGroupWhenMergeExecutionFails() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        WorkerCredentials worker = createApprovedWorkerCredentials("agent-merge-failed");
+        storeDockerCapabilities(worker.worker());
+        UUID executionGroupId = createAgentMergeGroup(
+                version.getId(),
+                "Agent merge failed",
+                1,
+                "FAIL_FAST",
+                baseMergeWorkspace.getId()
+        );
+
+        reportSucceededWithOutput(worker, claimNext(worker), "result.json", "{}");
+        reportFailed(worker, claimNext(worker));
+
+        assertGroupCounts(executionGroupId, "FAILED", 0, 2, 0, 0);
+        assertThat(groupRepository.findById(executionGroupId))
+                .hasValueSatisfying(group -> assertThat(group.getFailureCode()).isEqualTo("MERGE_EXECUTION_FAILED"));
+    }
+
     private org.springframework.test.web.servlet.ResultActions expectBadCreate(String request) throws Exception {
         return mockMvc.perform(post("/api/admin/execution-groups")
                         .with(admin())
@@ -850,6 +1192,34 @@ class AdminExecutionGroupControllerIntegrationTest {
                                 assignmentMode,
                                 workerId,
                                 failurePolicy
+                        ))
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertSafeAdminResponse(response);
+        return UUID.fromString(JsonPath.read(response, "$.executionGroupId"));
+    }
+
+    private UUID createAgentMergeGroup(UUID versionId,
+                                       String displayName,
+                                       int shardCount,
+                                       String failurePolicy,
+                                       UUID baseMergeWorkspaceId) throws Exception {
+        String response = mockMvc.perform(post("/api/admin/execution-groups")
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(shardedCreateRequestWithMergeConfiguration(
+                                versionId,
+                                displayName,
+                                shardCount,
+                                "AUTO",
+                                null,
+                                failurePolicy,
+                                "AGENT",
+                                baseMergeWorkspaceId,
+                                "[\"sh\", \"/workspace/merge.sh\", \"{{inputManifestPath}}\", \"{{shardCount}}\"]"
                         ))
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isCreated())
@@ -907,6 +1277,33 @@ class AdminExecutionGroupControllerIntegrationTest {
 
     private void reportSucceeded(WorkerCredentials worker, ClaimedShard claimedShard) throws Exception {
         reportRunning(worker, claimedShard);
+        reportSucceededAfterRunning(worker, claimedShard);
+    }
+
+    private void reportSucceededWithOutput(WorkerCredentials worker,
+                                           ClaimedShard claimedShard,
+                                           String relativePath,
+                                           String content) throws Exception {
+        reportRunning(worker, claimedShard);
+        mockMvc.perform(multipart(
+                        "/api/workers/{workerId}/executions/{executionId}/artifacts/output",
+                        worker.worker().getId(),
+                        claimedShard.executionId()
+                )
+                        .file(new MockMultipartFile(
+                                "file",
+                                filename(relativePath),
+                                "application/json",
+                                content.getBytes(StandardCharsets.UTF_8)
+                        ))
+                        .param("relativePath", relativePath)
+                        .header(API_KEY_HEADER, worker.rawApiKey())
+                        .header("X-EXECUTION-LEASE", claimedShard.leaseToken()))
+                .andExpect(status().isOk());
+        reportSucceededAfterRunning(worker, claimedShard);
+    }
+
+    private void reportSucceededAfterRunning(WorkerCredentials worker, ClaimedShard claimedShard) throws Exception {
         mockMvc.perform(post(
                         "/api/workers/{workerId}/executions/{executionId}/succeeded",
                         worker.worker().getId(),
@@ -951,6 +1348,14 @@ class AdminExecutionGroupControllerIntegrationTest {
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("RUNNING"));
+    }
+
+    private List<WorkExecution> mergeExecutions(UUID executionGroupId) {
+        return executionRepository.findAdminExecutionsByExecutionGroupId(executionGroupId)
+                .stream()
+                .filter(execution -> execution.getGroupRole() != null
+                        && execution.getGroupRole().name().equals("MERGE"))
+                .toList();
     }
 
     private String shardedCreateRequest(UUID versionId,
@@ -1005,6 +1410,68 @@ class AdminExecutionGroupControllerIntegrationTest {
                 failurePolicy,
                 commandTemplate,
                 "NONE"
+        );
+    }
+
+    private String shardedCreateRequestWithMergeConfiguration(UUID versionId,
+                                                              String displayName,
+                                                              int shardCount,
+                                                              String assignmentMode,
+                                                              UUID workerId,
+                                                              String failurePolicy,
+                                                              String mergeMode,
+                                                              UUID mergeWorkspaceArtifactId,
+                                                              String mergeCommandTemplate) {
+        String workerValue = workerId == null ? "null" : "\"" + workerId + "\"";
+        return """
+                {
+                  "displayName": "%s",
+                  "workDefinitionVersionId": "%s",
+                  "shardCount": %d,
+                  "mergeMode": "%s",
+                  "failurePolicy": "%s",
+                  "assignmentMode": "%s",
+                  "workerId": %s,
+                  "configurationTemplate": {
+                    "image": "alpine:3.20",
+                    "commandTemplate": ["sh", "/workspace/optimize.sh", "{{shardIndex}}", "{{shardCount}}"],
+                    "timeoutSeconds": 30,
+                    "resources": {
+                      "memoryMb": 128,
+                      "cpuCores": 1
+                    },
+                    "gpu": {
+                      "required": false
+                    }
+                  },
+                  "mergeConfigurationTemplate": {
+                    "image": "alpine:3.20",
+                    "commandTemplate": %s,
+                    "timeoutSeconds": 30,
+                    "resources": {
+                      "memoryMb": 128,
+                      "cpuCores": 1
+                    },
+                    "gpu": {
+                      "required": false
+                    },
+                    "workspace": {
+                      "artifactId": "%s",
+                      "mountPath": "/workspace",
+                      "readOnly": true
+                    }
+                  }
+                }
+                """.formatted(
+                displayName,
+                versionId,
+                shardCount,
+                mergeMode,
+                failurePolicy,
+                assignmentMode,
+                workerValue,
+                mergeCommandTemplate,
+                mergeWorkspaceArtifactId
         );
     }
 
@@ -1114,6 +1581,57 @@ class AdminExecutionGroupControllerIntegrationTest {
                 ResourceRequest.of(128, 1, false),
                 adminUser.getId()
         ));
+    }
+
+    private Artifact storeBaseMergeWorkspace() throws IOException {
+        return artifactManagementService.storeWorkspacePackage(
+                new MockMultipartFile(
+                        "file",
+                        "merge-workspace.zip",
+                        "application/zip",
+                        zip(Map.of(
+                                "merge.sh",
+                                "#!/bin/sh\ncat /workspace/inputs/manifest.json > /output/manifest.json\n"
+                        ))
+                ),
+                adminUser.getId().toString()
+        );
+    }
+
+    private Map<String, String> readZipEntries(Artifact artifact) throws IOException {
+        Map<String, String> entries = new LinkedHashMap<>();
+        try (ZipInputStream zipInput = new ZipInputStream(
+                Files.newInputStream(artifactStorageService.resolveReadablePath(artifact))
+        )) {
+            ZipEntry entry;
+            while ((entry = zipInput.getNextEntry()) != null) {
+                if (!entry.isDirectory()) {
+                    entries.put(
+                            entry.getName(),
+                            new String(zipInput.readAllBytes(), StandardCharsets.UTF_8)
+                    );
+                }
+                zipInput.closeEntry();
+            }
+        }
+        return entries;
+    }
+
+    private static byte[] zip(Map<String, String> entries) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ZipOutputStream zipOutput = new ZipOutputStream(output)) {
+            for (Map.Entry<String, String> entry : entries.entrySet()) {
+                zipOutput.putNextEntry(new ZipEntry(entry.getKey()));
+                zipOutput.write(entry.getValue().getBytes(StandardCharsets.UTF_8));
+                zipOutput.closeEntry();
+            }
+        }
+        return output.toByteArray();
+    }
+
+    private static String filename(String relativePath) {
+        int separator = relativePath.lastIndexOf('/');
+        return separator < 0 ? relativePath : relativePath.substring(separator + 1);
     }
 
     private static ObjectNode dockerBaseConfiguration() {

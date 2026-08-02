@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.FileAlreadyExistsException;
@@ -33,6 +34,18 @@ public class ArtifactStorageService {
     }
 
     public StoredArtifact storeWorkspacePackage(UUID artifactId, MultipartFile file) {
+        try {
+            return storeWorkspacePackage(artifactId, file.getInputStream());
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to read artifact.", e);
+        }
+    }
+
+    public StoredArtifact storeWorkspacePackage(UUID artifactId, byte[] content) {
+        return storeWorkspacePackage(artifactId, new ByteArrayInputStream(content));
+    }
+
+    private StoredArtifact storeWorkspacePackage(UUID artifactId, java.io.InputStream inputStream) {
         Path storageRoot = storageRootPath();
         Path relativePath = Path.of(artifactId.toString(), "package.zip");
         Path targetPath = storageRoot.resolve(relativePath).normalize();
@@ -47,8 +60,8 @@ public class ArtifactStorageService {
             Files.createDirectories(targetPath.getParent());
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             long sizeBytes;
-            try (DigestInputStream inputStream = new DigestInputStream(file.getInputStream(), digest)) {
-                sizeBytes = Files.copy(inputStream, targetPath);
+            try (DigestInputStream digestInputStream = new DigestInputStream(inputStream, digest)) {
+                sizeBytes = Files.copy(digestInputStream, targetPath);
             }
 
             return new StoredArtifact(

@@ -1,8 +1,8 @@
 # Admin Execution Groups API
 
-M17 added the read-only admin foundation for sharded workloads. M18 adds the first create and event-driven scheduling foundation for Docker shard groups.
+M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready.
 
-An `ExecutionGroup` is group-level metadata for sharding. Child work remains ordinary `WorkExecution` records with nullable group metadata. M18 creates `SHARD` children, expands a controlled Docker command template for each shard, assigns as many shards as currently eligible workers allow, and schedules later waves when child executions report terminal status.
+An `ExecutionGroup` is group-level metadata for sharding. Child work remains ordinary `WorkExecution` records with nullable group metadata. Master creates `SHARD` children, expands a controlled Docker command template for each shard, assigns as many shards as currently eligible workers allow, and schedules later waves when child executions report terminal status. With `mergeMode = AGENT`, Master later creates one `MERGE` child execution after shard policy allows merge.
 
 The Agent does not know about sharding. Every shard is still claimed, leased, executed, and reported as a normal `WorkExecution`.
 
@@ -27,8 +27,8 @@ Behavior:
 
 - creates one `ExecutionGroup` and `shardCount` child `WorkExecution` rows transactionally,
 - supports approved `TASK` definition versions for `localhive.docker.workload`,
-- creates only `groupRole = SHARD` children,
-- does not create a `MERGE` child execution,
+- creates only `groupRole = SHARD` children during the initial request,
+- for `mergeMode = AGENT`, stores an internal merge plan and creates the `MERGE` child only after shard outputs are ready,
 - runs an initial scheduling pass after child creation,
 - returns `201 Created` with the group detail response,
 - invalid request data returns `400`,
@@ -77,11 +77,12 @@ Request fields:
 | `displayName` | yes | Group display name. Blank or absent values return `400`. |
 | `workDefinitionVersionId` | yes | Approved Docker work definition version id. |
 | `shardCount` | yes | Number of child shard executions to create. Must be greater than `0`. |
-| `mergeMode` | no | Defaults to `NONE`. Only `NONE` is supported in M18. `MASTER` and `AGENT` return `400`. |
+| `mergeMode` | no | Defaults to `NONE`. `NONE` and `AGENT` are supported. `MASTER` returns `400`. |
 | `failurePolicy` | no | Defaults to `FAIL_FAST`. `ALLOW_PARTIAL` is also supported for final group status derivation. |
 | `assignmentMode` | no | Defaults to `AUTO`. `PREFER` is supported for the first shard. `REQUIRE` returns `400` in M18. |
 | `workerId` | conditional | Must be absent for `AUTO`. Required for `PREFER`. |
 | `configurationTemplate` | yes | Docker configuration template. It is validated with the existing Docker workload rules after command template expansion. |
+| `mergeConfigurationTemplate` | conditional | Required for `mergeMode = AGENT`; must be absent for `mergeMode = NONE`. It is an internal Docker merge template and is not returned by admin read APIs. |
 
 `configurationTemplate` is the base Docker configuration used for every shard. It must include `commandTemplate` instead of `command`. The final child execution configuration stores only the expanded `command`; `commandTemplate` is not stored in child execution snapshots.
 
@@ -102,6 +103,66 @@ Example expansion for `shardCount = 4`:
 ["sh", "/workspace/optimize.sh", "2", "4"]
 ["sh", "/workspace/optimize.sh", "3", "4"]
 ```
+
+## AGENT Merge
+
+`mergeMode = AGENT` is implemented as a normal Docker `WorkExecution` with `groupRole = MERGE`. The Agent remains unaware of sharding and merge semantics; it claims, leases, runs, uploads output artifacts, and reports terminal status exactly as it does for any other Docker execution.
+
+Create requests using `mergeMode = AGENT` must include `mergeConfigurationTemplate`:
+
+```json
+{
+  "mergeMode": "AGENT",
+  "mergeConfigurationTemplate": {
+    "image": "alpine:3.20",
+    "commandTemplate": [
+      "sh",
+      "/workspace/merge.sh",
+      "{{inputManifestPath}}"
+    ],
+    "timeoutSeconds": 30,
+    "resources": {
+      "memoryMb": 128,
+      "cpuCores": 1
+    },
+    "gpu": {
+      "required": false
+    },
+    "workspace": {
+      "artifactId": "00000000-0000-0000-0000-000000000000",
+      "mountPath": "/workspace",
+      "readOnly": true
+    }
+  }
+}
+```
+
+Merge command template rules:
+
+- `commandTemplate` must be a non-empty JSON array,
+- every element must be a nonblank string,
+- supported placeholders are `{{executionGroupId}}`, `{{shardCount}}`, and `{{inputManifestPath}}`,
+- unsupported or malformed placeholders return `400`,
+- substitution is done by Master on individual command list elements,
+- LocalHive does not concatenate a shell command string or add shell interpolation.
+
+The `workspace.artifactId` in `mergeConfigurationTemplate` points to the base merge workspace uploaded to Master, for example a ZIP containing `merge.sh`. When the merge becomes ready, Master creates a derived `WORKSPACE_PACKAGE` artifact for the merge execution. The derived workspace contains base workspace files plus successful shard outputs:
+
+```text
+workspace/
+|-- merge.sh
+`-- inputs/
+    |-- manifest.json
+    `-- shards/
+        |-- 0/
+        |   `-- result.json
+        `-- 1/
+            `-- summary.txt
+```
+
+The manifest is available at `/workspace/inputs/manifest.json` and contains safe metadata only: execution group id, shard count, failure policy, successful shard ids/indexes/statuses, artifact ids, original relative paths, and container input paths. It does not contain API keys, lease tokens, hashes, raw configuration snapshots, storage paths, `dataRoot`, or physical filesystem paths.
+
+The derived workspace uses the existing workspace package artifact flow and is downloaded by the Agent through the existing worker API key plus execution lease mechanism. The Docker mount remains read-only at `/workspace`; merge output is still written by the Agent to `/output` and uploaded through the existing output artifact endpoint before terminal report.
 
 Response shape:
 
@@ -129,19 +190,20 @@ Response shape:
 }
 ```
 
-## M18 Scheduling
+## Scheduling
 
-Scheduling is event-driven in M18:
+Scheduling is event-driven:
 
 1. Group creation creates all child shards as queued executions.
 2. Initial scheduling assigns as many queued shards as eligible workers allow.
 3. When a child shard reaches a terminal status through the existing worker report flow, Master tries to assign the next queued shard.
+4. For `mergeMode = AGENT`, when shard policy allows merge, Master prepares the derived workspace, creates one queued `MERGE` execution, and tries to assign it with `AUTO` selection.
 
 Shard scheduling reuses M13 capability-aware worker selection. Eligibility still requires an approved, online, available worker with no active execution, enough shared RAM and CPU, a matching enabled executor capability, and a Docker policy that allows the requested image and resources.
 
-More shards than workers are supported. If no worker is eligible during creation or after a child terminal report, queued shards remain `QUEUED` and the group remains safe to inspect through the read APIs. M18 does not include a background scheduler or manual reconcile endpoint, so a future worker becoming eligible does not automatically trigger group scheduling until another event triggers scheduling.
+More shards than workers are supported. If no worker is eligible during creation or after a child terminal report, queued shards remain `QUEUED` and the group remains safe to inspect through the read APIs. If no worker is eligible for the merge execution, the `MERGE` child remains `QUEUED` and the group remains `MERGING`. M19 does not include a background scheduler or manual reconcile endpoint, so a future worker becoming eligible does not automatically trigger group scheduling until another event triggers scheduling.
 
-## M18 Group Status Derivation
+## Group Status Derivation
 
 For `mergeMode = NONE`:
 
@@ -151,6 +213,17 @@ For `mergeMode = NONE`:
 - if all children are terminal, at least one child succeeded, and `failurePolicy = ALLOW_PARTIAL`, the group derives `PARTIALLY_FAILED`.
 
 M18 does not aggressively interrupt or kill running children for `FAIL_FAST`. It also preserves future cancellation and expiry states if such a state is already present.
+
+For `mergeMode = AGENT`:
+
+- before shard policy allows merge, the group is `RUNNING`,
+- with `FAIL_FAST`, any failed, cancelled, or expired shard fails the group and no `MERGE` execution is created,
+- with `ALLOW_PARTIAL`, the merge is created if at least one shard succeeded,
+- if no shard succeeded, the group becomes `FAILED` and no `MERGE` execution is created,
+- when merge is queued, assigned, claimed, or running, the group is `MERGING`,
+- all shards succeeded and merge succeeded derives `SUCCEEDED`,
+- mixed shard results with `ALLOW_PARTIAL` and merge succeeded derives `PARTIALLY_FAILED`,
+- merge failure, cancellation, or expiry derives `FAILED`.
 
 ## List Execution Groups
 
@@ -290,23 +363,22 @@ M17 extended existing admin execution list and detail responses with nullable gr
 }
 ```
 
-Standalone executions keep all group metadata as `null`. M18 does not change standalone `POST /api/admin/executions` behavior.
+Standalone executions keep all group metadata as `null`. M18/M19 do not change standalone `POST /api/admin/executions` behavior.
 
 Grouped child executions may have:
 
 - `groupRole = SHARD`, `shardIndex = 0..shardCount-1`, `shardCount > 0`,
 - `groupRole = MERGE`, `shardIndex = null`.
 
-M18 creates only `SHARD` children. `MERGE` is a persisted model value for future merge execution support.
+M18 creates only `SHARD` children. M19 creates one `MERGE` child for `mergeMode = AGENT` after the shard phase is ready. The `MERGE` child uses `groupRole = MERGE`, `shardIndex = null`, and the group shard count in `shardCount`.
 
 The worker claim/report protocol is unchanged.
 
 ## Current Limitations
 
-M18 does not implement:
+M19 does not implement:
 
-- merge/reduce,
-- `groupRole = MERGE` creation,
+- `mergeMode = MASTER`,
 - manual reconcile endpoint,
 - background scheduler,
 - group cancel,
@@ -318,4 +390,4 @@ M18 does not implement:
 
 ## Future Extensions
 
-Future milestones may add manual reconcile, background scheduling, group cancellation, merge execution, group artifact aggregation, selection diagnostics for groups, retry and requeue policies, and frontend views.
+Future milestones may add manual reconcile, background scheduling, group cancellation, Master-side merge for controlled formats, group artifact aggregation, selection diagnostics for groups, retry and requeue policies, and frontend views.

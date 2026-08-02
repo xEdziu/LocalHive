@@ -3,6 +3,7 @@ package dev.adrian.goral.localhivebackend.repository.work;
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinitionVersion;
 import dev.adrian.goral.localhivebackend.domain.work.WorkExecution;
 import dev.adrian.goral.localhivebackend.domain.work.WorkInstance;
+import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionGroupRole;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
@@ -96,6 +97,32 @@ public interface WorkExecutionRepository extends JpaRepository<WorkExecution, UU
             ORDER BY execution.shardIndex ASC, execution.createdAt ASC, execution.id ASC
             """)
     List<WorkExecution> findQueuedShardExecutionsByExecutionGroupId(
+            @Param("executionGroupId") UUID executionGroupId
+    );
+
+    @EntityGraph(attributePaths = {"definitionVersion", "definitionVersion.definition", "executionGroup"})
+    @Query("""
+            SELECT execution
+            FROM WorkExecution execution
+            WHERE execution.executionGroup.id = :executionGroupId
+              AND execution.groupRole = :groupRole
+            ORDER BY execution.createdAt ASC, execution.id ASC
+            """)
+    List<WorkExecution> findByExecutionGroupIdAndGroupRole(
+            @Param("executionGroupId") UUID executionGroupId,
+            @Param("groupRole") WorkExecutionGroupRole groupRole
+    );
+
+    @EntityGraph(attributePaths = {"definitionVersion", "definitionVersion.definition", "executionGroup"})
+    @Query("""
+            SELECT execution
+            FROM WorkExecution execution
+            WHERE execution.executionGroup.id = :executionGroupId
+              AND execution.groupRole = dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionGroupRole.MERGE
+              AND execution.status = dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus.QUEUED
+            ORDER BY execution.createdAt ASC, execution.id ASC
+            """)
+    List<WorkExecution> findQueuedMergeExecutionsByExecutionGroupId(
             @Param("executionGroupId") UUID executionGroupId
     );
 

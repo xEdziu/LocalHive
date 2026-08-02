@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.adrian.goral.localhivebackend.domain.work.ExecutionGroup;
+import dev.adrian.goral.localhivebackend.domain.work.ExecutionGroupMergePlan;
 import dev.adrian.goral.localhivebackend.domain.work.ResourceRequestOverrides;
 import dev.adrian.goral.localhivebackend.domain.work.WorkDefinitionVersion;
 import dev.adrian.goral.localhivebackend.domain.work.WorkExecution;
@@ -17,6 +18,7 @@ import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
 import dev.adrian.goral.localhivebackend.dto.AdminCreateExecutionGroupRequestDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupDetailResponseDto;
 import dev.adrian.goral.localhivebackend.repository.work.ExecutionGroupRepository;
+import dev.adrian.goral.localhivebackend.repository.work.ExecutionGroupMergePlanRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkDefinitionVersionRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkExecutionRepository;
 import lombok.RequiredArgsConstructor;
@@ -24,25 +26,24 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @Service
 @RequiredArgsConstructor
 public class AdminExecutionGroupCreationService {
 
     private static final String DOCKER_EXECUTOR_ID = "localhive.docker.workload";
-    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{\\{([^{}]+)}}");
+    private static final UUID VALIDATION_EXECUTION_GROUP_ID = new UUID(0L, 0L);
+    private static final String INPUT_MANIFEST_PATH = "/workspace/inputs/manifest.json";
 
     private final ObjectMapper objectMapper;
     private final WorkDefinitionVersionRepository versionRepository;
     private final ExecutionGroupRepository groupRepository;
+    private final ExecutionGroupMergePlanRepository mergePlanRepository;
     private final WorkExecutionRepository executionRepository;
     private final WorkExecutionCreationService executionCreationService;
     private final DockerWorkloadConfigurationValidator dockerConfigurationValidator;
@@ -55,11 +56,19 @@ public class AdminExecutionGroupCreationService {
         LocalDateTime now = LocalDateTime.now();
         ExecutionGroup group = groupRepository.save(ExecutionGroup.create(
                 plan.displayName(),
-                ExecutionGroupMergeMode.NONE,
+                plan.mergeMode(),
                 plan.failurePolicy(),
                 plan.shardCount(),
                 now
         ));
+        if (plan.mergeConfigurationTemplate() != null) {
+            mergePlanRepository.save(ExecutionGroupMergePlan.create(
+                    group,
+                    plan.definitionVersion(),
+                    plan.mergeConfigurationTemplate(),
+                    now
+            ));
+        }
 
         for (int shardIndex = 0; shardIndex < plan.shardCount(); shardIndex++) {
             ShardConfiguration shardConfiguration = shardConfiguration(
@@ -98,8 +107,8 @@ public class AdminExecutionGroupCreationService {
 
         int shardCount = requirePositiveShardCount(request.shardCount());
         ExecutionGroupMergeMode mergeMode = resolveMergeMode(request.mergeMode());
-        if (mergeMode != ExecutionGroupMergeMode.NONE) {
-            throw new IllegalArgumentException("Merge modes MASTER and AGENT are designed but not implemented in M18.");
+        if (mergeMode == ExecutionGroupMergeMode.MASTER) {
+            throw new IllegalArgumentException("MASTER mergeMode is designed but not implemented.");
         }
 
         ExecutionGroupFailurePolicy failurePolicy = resolveFailurePolicy(request.failurePolicy());
@@ -108,6 +117,11 @@ public class AdminExecutionGroupCreationService {
         WorkDefinitionVersion definitionVersion = findDefinitionVersion(request.workDefinitionVersionId());
         requireShardedExecutableDefinitionVersion(definitionVersion);
         ObjectNode configurationTemplate = requireConfigurationTemplate(request.configurationTemplate());
+        ObjectNode mergeConfigurationTemplate = resolveMergeConfigurationTemplate(
+                request.mergeConfigurationTemplate(),
+                mergeMode,
+                shardCount
+        );
 
         // Validate the template before creating the group.
         shardConfiguration(configurationTemplate, 0, shardCount);
@@ -116,10 +130,12 @@ public class AdminExecutionGroupCreationService {
                 request.displayName(),
                 definitionVersion,
                 shardCount,
+                mergeMode,
                 failurePolicy,
                 assignmentMode,
                 workerId,
-                configurationTemplate
+                configurationTemplate,
+                mergeConfigurationTemplate
         );
     }
 
@@ -161,12 +177,47 @@ public class AdminExecutionGroupCreationService {
         return (ObjectNode) node;
     }
 
+    private ObjectNode requireMergeConfigurationTemplate(Map<String, Object> mergeConfigurationTemplate) {
+        if (mergeConfigurationTemplate == null) {
+            throw new IllegalArgumentException("mergeConfigurationTemplate is required for AGENT mergeMode.");
+        }
+
+        JsonNode node = objectMapper.valueToTree(mergeConfigurationTemplate);
+        if (!node.isObject()) {
+            throw new IllegalArgumentException("mergeConfigurationTemplate must be a JSON object.");
+        }
+        return (ObjectNode) node;
+    }
+
+    private ObjectNode resolveMergeConfigurationTemplate(Map<String, Object> rawMergeConfigurationTemplate,
+                                                         ExecutionGroupMergeMode mergeMode,
+                                                         int shardCount) {
+        if (mergeMode == ExecutionGroupMergeMode.NONE) {
+            if (rawMergeConfigurationTemplate != null) {
+                throw new IllegalArgumentException("mergeConfigurationTemplate must be absent when mergeMode is NONE.");
+            }
+            return null;
+        }
+
+        ObjectNode mergeConfigurationTemplate = requireMergeConfigurationTemplate(rawMergeConfigurationTemplate);
+        mergeConfiguration(
+                mergeConfigurationTemplate,
+                VALIDATION_EXECUTION_GROUP_ID,
+                shardCount,
+                null
+        );
+        return mergeConfigurationTemplate;
+    }
+
     private ShardConfiguration shardConfiguration(ObjectNode configurationTemplate, int shardIndex, int shardCount) {
         ObjectNode configuration = configurationTemplate.deepCopy();
-        List<String> command = expandCommandTemplate(
+        List<String> command = CommandTemplateExpander.expand(
                 configuration.get("commandTemplate"),
-                shardIndex,
-                shardCount
+                Map.of(
+                        "shardIndex", Integer.toString(shardIndex),
+                        "shardCount", Integer.toString(shardCount)
+                ),
+                "configurationTemplate.commandTemplate"
         );
         configuration.remove("commandTemplate");
         configuration.remove("command");
@@ -182,47 +233,39 @@ public class AdminExecutionGroupCreationService {
         );
     }
 
-    private static List<String> expandCommandTemplate(JsonNode commandTemplate, int shardIndex, int shardCount) {
-        if (commandTemplate == null || commandTemplate.isNull()) {
-            throw new IllegalArgumentException("configurationTemplate.commandTemplate is required.");
+    ObjectNode mergeConfiguration(ObjectNode mergeConfigurationTemplate,
+                                  UUID executionGroupId,
+                                  int shardCount,
+                                  UUID workspaceArtifactId) {
+        ObjectNode configuration = mergeConfigurationTemplate.deepCopy();
+        List<String> command = CommandTemplateExpander.expand(
+                configuration.get("commandTemplate"),
+                Map.of(
+                        "executionGroupId", executionGroupId.toString(),
+                        "shardCount", Integer.toString(shardCount),
+                        "inputManifestPath", INPUT_MANIFEST_PATH
+                ),
+                "mergeConfigurationTemplate.commandTemplate"
+        );
+        configuration.remove("commandTemplate");
+        configuration.remove("command");
+
+        ArrayNode commandNode = configuration.putArray("command");
+        command.forEach(commandNode::add);
+
+        if (!configuration.hasNonNull("workspace") || !configuration.get("workspace").isObject()) {
+            throw new IllegalArgumentException("mergeConfigurationTemplate.workspace is required.");
         }
-        if (!commandTemplate.isArray() || commandTemplate.isEmpty()) {
-            throw new IllegalArgumentException("configurationTemplate.commandTemplate must be a non-empty array.");
+        if (workspaceArtifactId != null) {
+            ObjectNode workspace = configuration.putObject("workspace");
+            workspace.put("artifactId", workspaceArtifactId.toString());
+            workspace.put("mountPath", "/workspace");
+            workspace.put("readOnly", true);
         }
 
-        List<String> command = new ArrayList<>();
-        commandTemplate.forEach(element -> {
-            if (!element.isTextual()) {
-                throw new IllegalArgumentException("configurationTemplate.commandTemplate elements must be text values.");
-            }
-            if (element.textValue().isBlank()) {
-                throw new IllegalArgumentException("configurationTemplate.commandTemplate elements must not be blank.");
-            }
-            command.add(expandPlaceholders(element.textValue(), shardIndex, shardCount));
-        });
-        return List.copyOf(command);
-    }
-
-    private static String expandPlaceholders(String value, int shardIndex, int shardCount) {
-        Matcher matcher = PLACEHOLDER_PATTERN.matcher(value);
-        StringBuffer result = new StringBuffer();
-        while (matcher.find()) {
-            String replacement = switch (matcher.group(1)) {
-                case "shardIndex" -> Integer.toString(shardIndex);
-                case "shardCount" -> Integer.toString(shardCount);
-                default -> throw new IllegalArgumentException(
-                        "Unsupported commandTemplate placeholder: {{" + matcher.group(1) + "}}"
-                );
-            };
-            matcher.appendReplacement(result, Matcher.quoteReplacement(replacement));
-        }
-        matcher.appendTail(result);
-
-        String expanded = result.toString();
-        if (expanded.contains("{{") || expanded.contains("}}")) {
-            throw new IllegalArgumentException("Unsupported commandTemplate placeholder.");
-        }
-        return expanded;
+        DockerWorkloadConfiguration.Validated validated =
+                dockerConfigurationValidator.validateAdminConfiguration(configuration);
+        return dockerConfigurationValidator.toConfiguration(validated);
     }
 
     private static int requirePositiveShardCount(Integer shardCount) {
@@ -280,7 +323,7 @@ public class AdminExecutionGroupCreationService {
             throw new IllegalArgumentException("Unknown assignmentMode: " + rawAssignmentMode.trim());
         }
         if (assignmentMode == ExecutionAssignmentMode.REQUIRE) {
-            throw new IllegalArgumentException("REQUIRE assignmentMode is not supported for execution group creation in M18.");
+            throw new IllegalArgumentException("REQUIRE assignmentMode is not supported for execution group creation.");
         }
 
         return assignmentMode;
@@ -301,7 +344,7 @@ public class AdminExecutionGroupCreationService {
                 yield workerId;
             }
             case REQUIRE -> throw new IllegalArgumentException(
-                    "REQUIRE assignmentMode is not supported for execution group creation in M18."
+                    "REQUIRE assignmentMode is not supported for execution group creation."
             );
         };
     }
@@ -321,14 +364,31 @@ public class AdminExecutionGroupCreationService {
         return (truncated.isBlank() ? "Execution group" : truncated) + suffix;
     }
 
+    static String mergeDisplayName(String displayName) {
+        String suffix = " merge";
+        String base = displayName == null ? "Execution group" : displayName.trim();
+        if (base.isBlank()) {
+            base = "Execution group";
+        }
+        if (base.length() + suffix.length() <= WorkExecutionDisplayName.MAX_LENGTH) {
+            return base + suffix;
+        }
+
+        int maxBaseLength = WorkExecutionDisplayName.MAX_LENGTH - suffix.length();
+        String truncated = base.substring(0, Math.max(1, maxBaseLength)).trim();
+        return (truncated.isBlank() ? "Execution group" : truncated) + suffix;
+    }
+
     private record CreationPlan(
             String displayName,
             WorkDefinitionVersion definitionVersion,
             int shardCount,
+            ExecutionGroupMergeMode mergeMode,
             ExecutionGroupFailurePolicy failurePolicy,
             ExecutionAssignmentMode assignmentMode,
             UUID workerId,
-            ObjectNode configurationTemplate
+            ObjectNode configurationTemplate,
+            ObjectNode mergeConfigurationTemplate
     ) {
     }
 

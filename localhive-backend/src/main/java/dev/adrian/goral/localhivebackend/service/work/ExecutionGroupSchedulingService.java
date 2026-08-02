@@ -8,7 +8,9 @@ import dev.adrian.goral.localhivebackend.domain.work.WorkDefinitionVersion;
 import dev.adrian.goral.localhivebackend.domain.work.WorkExecution;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionAssignmentMode;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupFailurePolicy;
+import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupMergeMode;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupStatus;
+import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionGroupRole;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
 import dev.adrian.goral.localhivebackend.repository.work.ExecutionGroupRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkExecutionRepository;
@@ -19,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.EnumMap;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
@@ -31,6 +34,10 @@ public class ExecutionGroupSchedulingService {
 
     private static final String CHILD_FAILURE_CODE = "CHILD_EXECUTION_FAILED";
     private static final String CHILD_FAILURE_MESSAGE = "One or more child executions failed.";
+    private static final String MERGE_FAILURE_CODE = "MERGE_EXECUTION_FAILED";
+    private static final String MERGE_FAILURE_MESSAGE = "Merge execution failed.";
+    private static final String DUPLICATE_MERGE_FAILURE_CODE = "DUPLICATE_MERGE_EXECUTION";
+    private static final String DUPLICATE_MERGE_FAILURE_MESSAGE = "More than one merge execution exists.";
     private static final EnumSet<ExecutionGroupStatus> PRESERVED_GROUP_STATUSES = EnumSet.of(
             ExecutionGroupStatus.CANCELLING,
             ExecutionGroupStatus.CANCELLED,
@@ -72,7 +79,10 @@ public class ExecutionGroupSchedulingService {
 
         LocalDateTime validNow = Objects.requireNonNull(now, "now must not be null.");
         refreshGroupStatus(executionGroupId, validNow);
-        scheduleQueuedShards(executionGroupId, ExecutionAssignmentMode.AUTO, null, validNow);
+        if (validExecution.getGroupRole() == WorkExecutionGroupRole.SHARD
+                && canScheduleMoreShards(executionGroupId)) {
+            scheduleQueuedShards(executionGroupId, ExecutionAssignmentMode.AUTO, null, validNow);
+        }
         refreshGroupStatus(executionGroupId, validNow);
     }
 
@@ -84,6 +94,11 @@ public class ExecutionGroupSchedulingService {
         }
 
         LocalDateTime validNow = Objects.requireNonNull(now, "now must not be null.");
+        if (group.getMergeMode() == ExecutionGroupMergeMode.AGENT) {
+            refreshAgentMergeGroupStatus(group, validNow);
+            return;
+        }
+
         Map<WorkExecutionStatus, Long> counts = countsByStatus(group.getId());
         long totalExecutions = totalExecutions(counts);
         long succeededExecutions = counts.getOrDefault(WorkExecutionStatus.SUCCEEDED, 0L);
@@ -110,6 +125,90 @@ public class ExecutionGroupSchedulingService {
         group.markFailed(CHILD_FAILURE_CODE, CHILD_FAILURE_MESSAGE, validNow);
     }
 
+    @Transactional
+    public void scheduleQueuedMerge(UUID executionGroupId, LocalDateTime now) {
+        findGroup(executionGroupId);
+        LocalDateTime validNow = Objects.requireNonNull(now, "now must not be null.");
+        for (WorkExecution execution : executionRepository.findQueuedMergeExecutionsByExecutionGroupId(executionGroupId)) {
+            Worker worker;
+            try {
+                worker = selectWorker(execution, ExecutionAssignmentMode.AUTO, null);
+            } catch (WorkerSelectionService.NoEligibleWorkerException e) {
+                return;
+            }
+
+            assignmentService.assignExecution(
+                    execution.getId(),
+                    worker.getId(),
+                    ExecutionAssignmentMode.AUTO,
+                    validNow
+            );
+        }
+    }
+
+    private void refreshAgentMergeGroupStatus(ExecutionGroup group, LocalDateTime now) {
+        List<WorkExecution> shards = executionRepository.findByExecutionGroupIdAndGroupRole(
+                group.getId(),
+                WorkExecutionGroupRole.SHARD
+        );
+        List<WorkExecution> merges = executionRepository.findByExecutionGroupIdAndGroupRole(
+                group.getId(),
+                WorkExecutionGroupRole.MERGE
+        );
+
+        long succeededShards = shards.stream()
+                .filter(execution -> execution.getStatus() == WorkExecutionStatus.SUCCEEDED)
+                .count();
+        boolean anyUnsuccessfulTerminalShard = shards.stream()
+                .anyMatch(execution -> TERMINAL_EXECUTION_STATUSES.contains(execution.getStatus())
+                        && execution.getStatus() != WorkExecutionStatus.SUCCEEDED);
+
+        if (group.getFailurePolicy() == ExecutionGroupFailurePolicy.FAIL_FAST && anyUnsuccessfulTerminalShard) {
+            group.markFailed(CHILD_FAILURE_CODE, CHILD_FAILURE_MESSAGE, now);
+            return;
+        }
+
+        boolean shardPhaseComplete = shards.size() >= group.getShardCount()
+                && shards.stream().allMatch(execution -> TERMINAL_EXECUTION_STATUSES.contains(execution.getStatus()));
+        if (!shardPhaseComplete) {
+            group.markRunning(now);
+            return;
+        }
+
+        if (merges.isEmpty()) {
+            if (succeededShards == 0) {
+                group.markFailed(CHILD_FAILURE_CODE, CHILD_FAILURE_MESSAGE, now);
+                return;
+            }
+
+            group.markMerging(now);
+            return;
+        }
+
+        if (merges.size() > 1) {
+            group.markFailed(DUPLICATE_MERGE_FAILURE_CODE, DUPLICATE_MERGE_FAILURE_MESSAGE, now);
+            return;
+        }
+
+        WorkExecution merge = merges.get(0);
+        if (!TERMINAL_EXECUTION_STATUSES.contains(merge.getStatus())) {
+            group.markMerging(now);
+            return;
+        }
+
+        if (merge.getStatus() != WorkExecutionStatus.SUCCEEDED) {
+            group.markFailed(MERGE_FAILURE_CODE, MERGE_FAILURE_MESSAGE, now);
+            return;
+        }
+
+        if (succeededShards == group.getShardCount()) {
+            group.markSucceeded(now);
+            return;
+        }
+
+        group.markPartiallyFailed(CHILD_FAILURE_CODE, CHILD_FAILURE_MESSAGE, now);
+    }
+
     private void scheduleQueuedShards(UUID executionGroupId,
                                       ExecutionAssignmentMode firstAssignmentMode,
                                       UUID preferredWorkerId,
@@ -134,6 +233,14 @@ public class ExecutionGroupSchedulingService {
                     now
             );
         }
+    }
+
+    private boolean canScheduleMoreShards(UUID executionGroupId) {
+        ExecutionGroup group = findGroup(executionGroupId);
+        return !PRESERVED_GROUP_STATUSES.contains(group.getStatus())
+                && group.getStatus() != ExecutionGroupStatus.FAILED
+                && group.getStatus() != ExecutionGroupStatus.PARTIALLY_FAILED
+                && group.getStatus() != ExecutionGroupStatus.SUCCEEDED;
     }
 
     private Worker selectWorker(WorkExecution execution,

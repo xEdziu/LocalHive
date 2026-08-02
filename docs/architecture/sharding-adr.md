@@ -8,6 +8,8 @@ M17 implementation note: the domain foundation now includes `ExecutionGroup` per
 
 M18 implementation note: the first create and scheduling foundation now includes `POST /api/admin/execution-groups`, Docker `commandTemplate` expansion, `SHARD` child execution creation, initial scheduling, and event-driven wave scheduling after terminal child reports. M18 supports only `mergeMode = NONE`; merge/reduce, manual reconcile, background scheduling, group cancellation, Agent changes, Docker executor changes, and frontend UI remain future work.
 
+M19 implementation note: `mergeMode = AGENT` now creates one normal Docker `MERGE` child execution after shard policy allows merge. Master prepares a derived read-only workspace package containing the base merge workspace, successful shard output artifacts, and `/workspace/inputs/manifest.json`. The Agent remains unchanged and unaware of sharding; `mergeMode = MASTER`, manual reconcile, background scheduling, group cancellation, Agent changes, Docker executor changes, and frontend UI remain future work.
+
 ## Context
 
 LocalHive already has production foundations for Docker workload execution:
@@ -352,7 +354,7 @@ Standalone execution behavior must remain unchanged when these fields are null.
 
 `SHARD` children carry concrete Docker configuration after command template expansion. The Agent claims and runs them as normal Docker workload executions.
 
-`MERGE` child execution, when introduced, should also be a normal `WorkExecution`.
+`MERGE` child execution for `mergeMode = AGENT` is also a normal `WorkExecution`.
 
 ## Shard Command Template
 
@@ -401,7 +403,23 @@ Merge should be explicit group metadata.
 
 `MASTER` is appropriate only for controlled reducers that Master can safely parse and execute without arbitrary user code. It should not become a general script execution mechanism inside Master.
 
-`AGENT` is the preferred future general-purpose reducer model. Master creates a normal Docker workload execution with `groupRole = MERGE`, waits for shard artifacts, provides needed inputs, and collects the final output artifact through the existing Agent output upload path.
+`AGENT` is the general-purpose reducer model implemented in M19. Master creates a normal Docker workload execution with `groupRole = MERGE`, waits for successful shard artifacts according to the group failure policy, provides needed inputs through a derived workspace package, and collects final output artifacts through the existing Agent output upload path.
+
+M19 derived workspace layout:
+
+```text
+workspace/
+|-- merge.sh
+`-- inputs/
+    |-- manifest.json
+    `-- shards/
+        |-- 0/
+        |   `-- result.json
+        `-- 1/
+            `-- summary.txt
+```
+
+The manifest contains safe metadata only: execution group id, shard count, failure policy, successful shard ids/indexes/statuses, artifact ids, relative paths, and container input paths. It does not contain API keys, lease tokens, hashes, raw configuration snapshots, storage paths, `dataRoot`, or physical paths.
 
 ## Status Model
 
@@ -507,7 +525,8 @@ The Agent remains compatible because every shard is still a normal claimed `Work
 - Scheduling currently runs only on group creation and after terminal child reports.
 - No manual reconcile endpoint exists yet.
 - No background scheduler exists yet.
-- No merge execution exists yet.
+- `mergeMode = MASTER` does not exist yet.
+- Manual reconcile for queued merge executions does not exist yet.
 - No group cancel endpoint exists yet.
 - No Agent changes exist or are required for the current shard model.
 - No frontend UI exists.
@@ -521,7 +540,7 @@ The Agent remains compatible because every shard is still a normal claimed `Work
 - Agent-side cooperative cancellation.
 - Retry and requeue policies.
 - Merge worker policy implementation.
-- `AGENT` merge execution with final result artifact.
+- Master-side merge for controlled formats.
 - Cursor-paginated group history.
 - Shard progress and log summaries.
 - GPU-aware shard scheduling after explicit GPU support design.
@@ -531,8 +550,8 @@ The Agent remains compatible because every shard is still a normal claimed `Work
 
 - Should group creation create all child executions immediately or create them lazily in waves?
 - Should `ExecutionGroup` store requested configuration snapshot, resolved child template, or both?
-- What is the first supported merge mode: `NONE` only, or `AGENT` behind a narrow contract?
-- How should shard output artifacts be made available to an `AGENT` merge execution?
+- Should `mergeMode = MASTER` be implemented for controlled data formats?
+- Should derived merge workspaces support larger artifact sets than the current workspace package limits?
 - Should group cancellation use `FAIL_FAST` and `ALLOW_PARTIAL` policies, or a separate cancellation policy?
 - How should group-level progress be counted when merge execution exists?
 - Is manual reconcile enough for V1, or is a lightweight background scheduler required?

@@ -11,6 +11,7 @@ public record AdminCreateExecutionGroupRequestDto(
         String failurePolicy,
         String assignmentMode,
         UUID workerId,
-        Map<String, Object> configurationTemplate
+        Map<String, Object> configurationTemplate,
+        Map<String, Object> mergeConfigurationTemplate
 ) {
 }

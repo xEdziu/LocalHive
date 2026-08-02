@@ -104,6 +104,18 @@ public class ExecutionGroup {
         this.failureMessage = null;
     }
 
+    public void markMerging(LocalDateTime updatedAt) {
+        if (isCancellationOrExpiredState()) {
+            return;
+        }
+
+        this.status = ExecutionGroupStatus.MERGING;
+        this.updatedAt = Objects.requireNonNull(updatedAt, "updatedAt must not be null.");
+        this.completedAt = null;
+        this.failureCode = null;
+        this.failureMessage = null;
+    }
+
     public void markSucceeded(LocalDateTime completedAt) {
         if (isCancellationOrExpiredState()) {
             return;

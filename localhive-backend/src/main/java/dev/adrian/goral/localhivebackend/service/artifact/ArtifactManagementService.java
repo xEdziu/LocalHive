@@ -74,6 +74,35 @@ public class ArtifactManagementService {
         }
     }
 
+    public Artifact storeGeneratedWorkspacePackage(byte[] content, String originalFilename, String createdBy) {
+        byte[] validContent = requireGeneratedContent(content);
+        String validOriginalFilename = requireZipFilename(originalFilename);
+        requireAllowedSize(validContent.length);
+        UUID artifactId = UUID.randomUUID();
+
+        StoredArtifact storedArtifact = storageService.storeWorkspacePackage(artifactId, validContent);
+        try {
+            if (storedArtifact.sizeBytes() > MAX_WORKSPACE_PACKAGE_SIZE_BYTES) {
+                throw new IllegalArgumentException("file must be at most 50 MB.");
+            }
+            Artifact artifact = Artifact.create(
+                    artifactId,
+                    ArtifactKind.WORKSPACE_PACKAGE,
+                    validOriginalFilename,
+                    "application/zip",
+                    storedArtifact.sizeBytes(),
+                    storedArtifact.sha256(),
+                    storedArtifact.storagePath(),
+                    LocalDateTime.now(),
+                    createdBy
+            );
+            return artifactRepository.save(artifact);
+        } catch (RuntimeException e) {
+            storageService.deleteQuietly(storedArtifact.storagePath());
+            throw e;
+        }
+    }
+
     @Transactional(readOnly = true)
     public ArtifactDownload resolveWorkspacePackageDownload(UUID workerId,
                                                             UUID executionId,
@@ -104,6 +133,14 @@ public class ArtifactManagementService {
         }
 
         return file;
+    }
+
+    private static byte[] requireGeneratedContent(byte[] content) {
+        if (content == null || content.length == 0) {
+            throw new IllegalArgumentException("file is required.");
+        }
+
+        return content.clone();
     }
 
     private static String requireZipFilename(String filename) {

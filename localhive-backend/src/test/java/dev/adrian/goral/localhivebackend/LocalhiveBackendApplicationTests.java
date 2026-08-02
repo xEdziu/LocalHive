@@ -45,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("13");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("14");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -55,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(13);
+        assertThat(appliedMigrationCount).isEqualTo(14);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -76,6 +76,7 @@ class LocalhiveBackendApplicationTests {
                 "work_definition_versions",
                 "work_instances",
                 "execution_groups",
+                "execution_group_merge_plans",
                 "work_executions",
                 "execution_assignments",
                 "execution_attempts",
@@ -218,6 +219,32 @@ class LocalhiveBackendApplicationTests {
                         "execution_groups_failure_policy_check",
                         "execution_groups_shard_count_check",
                         "execution_groups_failure_fields_check"
+                );
+
+        List<String> executionGroupMergePlanColumns = jdbcTemplate.queryForList(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'execution_group_merge_plans'",
+                String.class
+        );
+        assertThat(executionGroupMergePlanColumns)
+                .contains(
+                        "execution_group_id",
+                        "definition_version_id",
+                        "configuration_template",
+                        "created_at"
+                );
+
+        List<String> executionGroupMergePlanConstraints = jdbcTemplate.queryForList("""
+                select constraint_name
+                from information_schema.table_constraints
+                where table_schema = 'public'
+                  and table_name = 'execution_group_merge_plans'
+                """, String.class);
+        assertThat(executionGroupMergePlanConstraints)
+                .contains(
+                        "execution_group_merge_plans_pkey",
+                        "fk_execution_group_merge_plans_execution_group_id",
+                        "fk_execution_group_merge_plans_definition_version_id",
+                        "execution_group_merge_plans_configuration_template_object_check"
                 );
 
         List<String> executionAssignmentColumns = jdbcTemplate.queryForList(
