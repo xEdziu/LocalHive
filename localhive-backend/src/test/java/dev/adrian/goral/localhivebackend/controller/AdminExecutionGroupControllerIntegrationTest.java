@@ -454,6 +454,23 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(jsonPath("$.childExecutionCounts.SUCCEEDED").value(1))
                 .andExpect(jsonPath("$.failureCode").value(nullValue()))
                 .andExpect(jsonPath("$.failureMessage").value(nullValue()))
+                .andExpect(jsonPath("$.observability.terminal").value(false))
+                .andExpect(jsonPath("$.observability.cancelInProgress").value(false))
+                .andExpect(jsonPath("$.observability.hasActiveChildren").value(false))
+                .andExpect(jsonPath("$.observability.hasQueuedChildren").value(false))
+                .andExpect(jsonPath("$.observability.canCancel").value(true))
+                .andExpect(jsonPath("$.observability.canReconcile").value(true))
+                .andExpect(jsonPath("$.observability.shards.total").value(2))
+                .andExpect(jsonPath("$.observability.shards.assigned").value(1))
+                .andExpect(jsonPath("$.observability.shards.succeeded").value(1))
+                .andExpect(jsonPath("$.observability.shards.terminal").value(1))
+                .andExpect(jsonPath("$.observability.shards.nonTerminal").value(1))
+                .andExpect(jsonPath("$.observability.merge.exists").value(false))
+                .andExpect(jsonPath("$.observability.merge.executionId").value(nullValue()))
+                .andExpect(jsonPath("$.observability.merge.status").value(nullValue()))
+                .andExpect(jsonPath("$.observability.merge.workerId").value(nullValue()))
+                .andExpect(jsonPath("$.observability.merge.workerHostname").value(nullValue()))
+                .andExpect(jsonPath("$.observability.merge.total").value(0))
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
@@ -470,10 +487,14 @@ class AdminExecutionGroupControllerIntegrationTest {
     @Test
     void shouldReturnOnlyChildExecutionsForExecutionGroup() throws Exception {
         WorkDefinitionVersion version = noOpVersion();
-        ExecutionGroup group = createGroup("Children group", 2);
-        WorkExecution firstChild = createQueuedShardExecution(group, version, 0, 2, "First child");
+        ExecutionGroup group = createGroup("Children group", 3);
+        WorkExecution thirdChild = createQueuedShardExecution(group, version, 2, 3, "Third child");
         Thread.sleep(5);
-        WorkExecution secondChild = createQueuedShardExecution(group, version, 1, 2, "Second child");
+        WorkExecution firstChild = createQueuedShardExecution(group, version, 0, 3, "First child");
+        Thread.sleep(5);
+        WorkExecution mergeChild = createQueuedMergeExecution(group, version, 3, "Merge child");
+        Thread.sleep(5);
+        WorkExecution secondChild = createQueuedShardExecution(group, version, 1, 3, "Second child");
         WorkExecution standalone = createOneOff(version, "Standalone execution");
 
         String response = mockMvc.perform(get(
@@ -483,19 +504,26 @@ class AdminExecutionGroupControllerIntegrationTest {
                         .with(admin())
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(2)))
-                .andExpect(jsonPath("$[0].executionId").value(secondChild.getId().toString()))
+                .andExpect(jsonPath("$", hasSize(4)))
+                .andExpect(jsonPath("$[0].executionId").value(firstChild.getId().toString()))
                 .andExpect(jsonPath("$[0].status").value("QUEUED"))
                 .andExpect(jsonPath("$[0].assignmentMode").value(nullValue()))
                 .andExpect(jsonPath("$[0].workerId").value(nullValue()))
                 .andExpect(jsonPath("$[0].workerHostname").value(nullValue()))
                 .andExpect(jsonPath("$[0].groupRole").value("SHARD"))
-                .andExpect(jsonPath("$[0].shardIndex").value(1))
-                .andExpect(jsonPath("$[0].shardCount").value(2))
+                .andExpect(jsonPath("$[0].shardIndex").value(0))
+                .andExpect(jsonPath("$[0].shardCount").value(3))
                 .andExpect(jsonPath("$[0].createdAt").exists())
                 .andExpect(jsonPath("$[0].updatedAt").exists())
-                .andExpect(jsonPath("$[1].executionId").value(firstChild.getId().toString()))
-                .andExpect(jsonPath("$[1].shardIndex").value(0))
+                .andExpect(jsonPath("$[1].executionId").value(secondChild.getId().toString()))
+                .andExpect(jsonPath("$[1].groupRole").value("SHARD"))
+                .andExpect(jsonPath("$[1].shardIndex").value(1))
+                .andExpect(jsonPath("$[2].executionId").value(thirdChild.getId().toString()))
+                .andExpect(jsonPath("$[2].groupRole").value("SHARD"))
+                .andExpect(jsonPath("$[2].shardIndex").value(2))
+                .andExpect(jsonPath("$[3].executionId").value(mergeChild.getId().toString()))
+                .andExpect(jsonPath("$[3].groupRole").value("MERGE"))
+                .andExpect(jsonPath("$[3].shardIndex").value(nullValue()))
                 .andExpect(content().string(not(org.hamcrest.Matchers.containsString(standalone.getId().toString()))))
                 .andReturn()
                 .getResponse()
@@ -513,7 +541,7 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(jsonPath("$.groupMetadata.executionGroupId").value(group.getId().toString()))
                 .andExpect(jsonPath("$.groupMetadata.groupRole").value("SHARD"))
                 .andExpect(jsonPath("$.groupMetadata.shardIndex").value(1))
-                .andExpect(jsonPath("$.groupMetadata.shardCount").value(2))
+                .andExpect(jsonPath("$.groupMetadata.shardCount").value(3))
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
@@ -540,6 +568,12 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(jsonPath("$.failureMessage")
                         .value(ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE))
                 .andExpect(jsonPath("$.childExecutionCounts.CANCELLED").value(2))
+                .andExpect(jsonPath("$.observability.terminal").value(true))
+                .andExpect(jsonPath("$.observability.cancelInProgress").value(false))
+                .andExpect(jsonPath("$.observability.canCancel").value(false))
+                .andExpect(jsonPath("$.observability.canReconcile").value(false))
+                .andExpect(jsonPath("$.observability.shards.cancelled").value(2))
+                .andExpect(jsonPath("$.observability.shards.terminal").value(2))
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
@@ -617,6 +651,13 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(jsonPath("$.completedAt").value(nullValue()))
                 .andExpect(jsonPath("$.childExecutionCounts.RUNNING").value(1))
                 .andExpect(jsonPath("$.childExecutionCounts.CANCELLED").value(1))
+                .andExpect(jsonPath("$.observability.terminal").value(false))
+                .andExpect(jsonPath("$.observability.cancelInProgress").value(true))
+                .andExpect(jsonPath("$.observability.hasActiveChildren").value(true))
+                .andExpect(jsonPath("$.observability.canCancel").value(true))
+                .andExpect(jsonPath("$.observability.canReconcile").value(true))
+                .andExpect(jsonPath("$.observability.shards.running").value(1))
+                .andExpect(jsonPath("$.observability.shards.cancelled").value(1))
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
@@ -1284,6 +1325,30 @@ class AdminExecutionGroupControllerIntegrationTest {
         assertThat(merge.getStatus().name()).isEqualTo("ASSIGNED");
         assertThat(merge.getDisplayNameSnapshot()).isEqualTo("Agent merge success merge");
 
+        String detailResponse = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}", executionGroupId)
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("MERGING"))
+                .andExpect(jsonPath("$.observability.terminal").value(false))
+                .andExpect(jsonPath("$.observability.canCancel").value(true))
+                .andExpect(jsonPath("$.observability.canReconcile").value(true))
+                .andExpect(jsonPath("$.observability.shards.total").value(2))
+                .andExpect(jsonPath("$.observability.shards.succeeded").value(2))
+                .andExpect(jsonPath("$.observability.shards.terminal").value(2))
+                .andExpect(jsonPath("$.observability.merge.exists").value(true))
+                .andExpect(jsonPath("$.observability.merge.executionId").value(merge.getId().toString()))
+                .andExpect(jsonPath("$.observability.merge.status").value("ASSIGNED"))
+                .andExpect(jsonPath("$.observability.merge.workerId").value(worker.worker().getId().toString()))
+                .andExpect(jsonPath("$.observability.merge.workerHostname").value(worker.worker().getHostname()))
+                .andExpect(jsonPath("$.observability.merge.total").value(1))
+                .andExpect(jsonPath("$.observability.merge.assigned").value(1))
+                .andExpect(jsonPath("$.observability.merge.nonTerminal").value(1))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertSafeAdminResponse(detailResponse);
+
         JsonNode mergeConfiguration = merge.getResolvedConfigurationSnapshot();
         assertThat(mergeConfiguration.get("command").get(0).asText()).isEqualTo("sh");
         assertThat(mergeConfiguration.get("command").get(2).asText()).isEqualTo("/workspace/inputs/manifest.json");
@@ -1417,6 +1482,13 @@ class AdminExecutionGroupControllerIntegrationTest {
 
         assertGroupCounts(executionGroupId, "FAILED", 0, 1, 0, 1);
         assertThat(mergeExecutions(executionGroupId)).isEmpty();
+    }
+
+    @Test
+    void shouldExposeTerminalObservabilityForFinishedGroups() throws Exception {
+        assertTerminalObservability(succeededGroup(), "SUCCEEDED");
+        assertTerminalObservability(failedGroup(), "FAILED");
+        assertTerminalObservability(partiallyFailedGroup(), "PARTIALLY_FAILED");
     }
 
     @Test
@@ -1723,9 +1795,26 @@ class AdminExecutionGroupControllerIntegrationTest {
         }
     }
 
+    private void assertTerminalObservability(ExecutionGroup group, String expectedStatus) throws Exception {
+        String response = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value(expectedStatus))
+                .andExpect(jsonPath("$.observability.terminal").value(true))
+                .andExpect(jsonPath("$.observability.cancelInProgress").value(false))
+                .andExpect(jsonPath("$.observability.canCancel").value(false))
+                .andExpect(jsonPath("$.observability.canReconcile").value(false))
+                .andExpect(jsonPath("$.observability.hasActiveChildren").value(false))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertSafeAdminResponse(response);
+    }
+
     private void assertGroupCancelConflict(ExecutionGroup group, String statusName) throws Exception {
         mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
-                        .with(admin())
+                .with(admin())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}")
                         .accept(MediaType.APPLICATION_JSON))
@@ -2115,6 +2204,15 @@ class AdminExecutionGroupControllerIntegrationTest {
                                                      String displayName) {
         WorkExecution execution = createOneOff(version, displayName);
         execution.attachToGroupAsShard(group, shardIndex, shardCount);
+        return executionRepository.saveAndFlush(execution);
+    }
+
+    private WorkExecution createQueuedMergeExecution(ExecutionGroup group,
+                                                     WorkDefinitionVersion version,
+                                                     Integer shardCount,
+                                                     String displayName) {
+        WorkExecution execution = createOneOff(version, displayName);
+        execution.attachToGroupAsMerge(group, shardCount);
         return executionRepository.saveAndFlush(execution);
     }
 

@@ -81,7 +81,15 @@ public interface WorkExecutionRepository extends JpaRepository<WorkExecution, UU
             SELECT execution
             FROM WorkExecution execution
             WHERE execution.executionGroup.id = :executionGroupId
-            ORDER BY execution.createdAt DESC, execution.id DESC
+            ORDER BY CASE
+                         WHEN execution.groupRole = dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionGroupRole.SHARD THEN 0
+                         WHEN execution.groupRole = dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionGroupRole.MERGE THEN 1
+                         ELSE 2
+                     END ASC,
+                     CASE WHEN execution.shardIndex IS NULL THEN 1 ELSE 0 END ASC,
+                     execution.shardIndex ASC,
+                     execution.createdAt ASC,
+                     execution.id ASC
             """)
     List<WorkExecution> findAdminExecutionsByExecutionGroupId(
             @Param("executionGroupId") UUID executionGroupId

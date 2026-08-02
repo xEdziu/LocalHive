@@ -1,6 +1,6 @@
 # Admin Execution Groups API
 
-M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile.
+M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile. M21 adds a derived observability summary to the group detail response and deterministic child execution ordering.
 
 An `ExecutionGroup` is group-level metadata for sharding. Child work remains ordinary `WorkExecution` records with nullable group metadata. Master creates `SHARD` children, expands a controlled Docker command template for each shard, assigns as many shards as currently eligible workers allow, and schedules later waves when child executions report terminal status. With `mergeMode = AGENT`, Master later creates one `MERGE` child execution after shard policy allows merge.
 
@@ -386,11 +386,69 @@ Response shape:
   "completedAt": null,
   "cancelledAt": null,
   "failureCode": null,
-  "failureMessage": null
+  "failureMessage": null,
+  "observability": {
+    "terminal": false,
+    "cancelInProgress": false,
+    "hasActiveChildren": true,
+    "hasQueuedChildren": true,
+    "canCancel": true,
+    "canReconcile": true,
+    "shards": {
+      "total": 4,
+      "queued": 1,
+      "assigned": 1,
+      "claimed": 0,
+      "running": 1,
+      "succeeded": 1,
+      "failed": 0,
+      "cancelled": 0,
+      "expired": 0,
+      "terminal": 1,
+      "nonTerminal": 3
+    },
+    "merge": {
+      "exists": false,
+      "executionId": null,
+      "status": null,
+      "workerId": null,
+      "workerHostname": null,
+      "total": 0,
+      "queued": 0,
+      "assigned": 0,
+      "claimed": 0,
+      "running": 0,
+      "succeeded": 0,
+      "failed": 0,
+      "cancelled": 0,
+      "expired": 0,
+      "terminal": 0,
+      "nonTerminal": 0
+    }
+  }
 }
 ```
 
 `activeExecutions` counts `ASSIGNED`, `CLAIMED`, and `RUNNING` children. `terminalExecutions` counts `SUCCEEDED`, `FAILED`, `CANCELLED`, and `EXPIRED` children. `QUEUED` children are counted in `totalExecutions` and `childExecutionCounts`, but they are not active or terminal.
+
+`observability` is a derived read model computed from the current `ExecutionGroup`, child `WorkExecution` rows, and safe assignment metadata. It is not persisted separately and is not an event log.
+
+Observability fields:
+
+| Field | Description |
+| --- | --- |
+| `terminal` | `true` for `SUCCEEDED`, `FAILED`, `PARTIALLY_FAILED`, `CANCELLED`, and `EXPIRED` group statuses. |
+| `cancelInProgress` | `true` only when the group status is `CANCELLING`. |
+| `hasActiveChildren` | `true` when at least one child is `CLAIMED` or `RUNNING`. This is narrower than legacy `activeExecutions`, which also counts `ASSIGNED`. |
+| `hasQueuedChildren` | `true` when at least one child execution is `QUEUED`. |
+| `canCancel` | Mirrors M20 cancel endpoint eligibility: `true` for `CREATED`, `SCHEDULING`, `RUNNING`, `MERGING`, and `CANCELLING`; `false` for terminal statuses. |
+| `canReconcile` | `true` for the same non-terminal statuses where manual reconcile can safely recalculate, schedule, or finalize; `false` for terminal statuses. |
+| `shards` | Counts only child executions with `groupRole = SHARD`. |
+| `merge` | Counts only child executions with `groupRole = MERGE` and exposes safe metadata for a deterministic representative merge child. |
+
+`shards` and `merge` expose per-status counts for `QUEUED`, `ASSIGNED`, `CLAIMED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, and `EXPIRED`, plus `total`, `terminal`, and `nonTerminal`. `merge.exists` is `false` and `merge.executionId`, `merge.status`, `merge.workerId`, and `merge.workerHostname` are `null` when no `MERGE` child exists. This is expected for `mergeMode = NONE`, for cancelled groups that never reached merge creation, and for `AGENT` merge groups whose shard policy has not allowed merge yet.
+
+If more than one `MERGE` child exists because of a historical data issue, the response remains safe: merge counts cover all `MERGE` children, while `executionId`, `status`, `workerId`, and `workerHostname` use the earliest merge child by `createdAt`, then execution id.
 
 ## Child Executions
 
@@ -403,7 +461,8 @@ Behavior:
 - existing group returns child executions,
 - group with no children returns `[]`,
 - missing group returns `404`,
-- standalone executions are not returned.
+- standalone executions are not returned,
+- results are sorted deterministically as `SHARD` children first, then `MERGE` children; shards are ordered by `shardIndex` ascending, then `createdAt` ascending, then execution id ascending.
 
 Response shape:
 
@@ -453,7 +512,7 @@ The worker claim/report protocol is unchanged.
 
 ## Current Limitations
 
-M20 does not implement:
+M21 does not implement:
 
 - `mergeMode = MASTER`,
 - background scheduler,
@@ -462,6 +521,7 @@ M20 does not implement:
 - retry or requeue policy,
 - Agent changes,
 - Docker executor changes,
+- a separate execution group event log,
 - frontend UI,
 - GPU support,
 - WebSocket, SOAP, Minecraft lifecycle, or research telemetry.

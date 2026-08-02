@@ -4,6 +4,7 @@ import dev.adrian.goral.localhivebackend.domain.work.ExecutionAssignment;
 import dev.adrian.goral.localhivebackend.domain.work.ExecutionGroup;
 import dev.adrian.goral.localhivebackend.domain.work.WorkExecution;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupStatus;
+import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionGroupRole;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupChildExecutionResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupDetailResponseDto;
@@ -20,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
@@ -42,11 +44,29 @@ public class AdminExecutionGroupQueryService {
             WorkExecutionStatus.CLAIMED,
             WorkExecutionStatus.RUNNING
     );
+    private static final EnumSet<WorkExecutionStatus> ACTIVE_CHILD_OBSERVABILITY_STATUSES = EnumSet.of(
+            WorkExecutionStatus.CLAIMED,
+            WorkExecutionStatus.RUNNING
+    );
     private static final EnumSet<WorkExecutionStatus> TERMINAL_EXECUTION_STATUSES = EnumSet.of(
             WorkExecutionStatus.SUCCEEDED,
             WorkExecutionStatus.FAILED,
             WorkExecutionStatus.CANCELLED,
             WorkExecutionStatus.EXPIRED
+    );
+    private static final EnumSet<ExecutionGroupStatus> TERMINAL_GROUP_STATUSES = EnumSet.of(
+            ExecutionGroupStatus.SUCCEEDED,
+            ExecutionGroupStatus.FAILED,
+            ExecutionGroupStatus.PARTIALLY_FAILED,
+            ExecutionGroupStatus.CANCELLED,
+            ExecutionGroupStatus.EXPIRED
+    );
+    private static final EnumSet<ExecutionGroupStatus> ACTIONABLE_GROUP_STATUSES = EnumSet.of(
+            ExecutionGroupStatus.CREATED,
+            ExecutionGroupStatus.SCHEDULING,
+            ExecutionGroupStatus.RUNNING,
+            ExecutionGroupStatus.MERGING,
+            ExecutionGroupStatus.CANCELLING
     );
     private static final Pattern AUTHORIZATION_BEARER = Pattern.compile(
             "(?i)Authorization\\s*:\\s*Bearer\\s+\\S+"
@@ -102,11 +122,20 @@ public class AdminExecutionGroupQueryService {
                 executionGroupId,
                 "executionGroupId must not be null."
         );
-        return groupRepository.findById(validExecutionGroupId)
-                .map(group -> toDetail(
-                        group,
-                        countsByStatus(validExecutionGroupId)
-                ));
+        return groupRepository.findById(validExecutionGroupId).map(group -> {
+            List<WorkExecution> children = executionRepository.findAdminExecutionsByExecutionGroupId(
+                    validExecutionGroupId
+            );
+            Map<UUID, ExecutionAssignment> assignments = assignmentsByExecutionId(children.stream()
+                    .map(WorkExecution::getId)
+                    .toList());
+            return toDetail(
+                    group,
+                    countsByStatus(children),
+                    children,
+                    assignments
+            );
+        });
     }
 
     @Transactional(readOnly = true)
@@ -171,18 +200,11 @@ public class AdminExecutionGroupQueryService {
                 ));
     }
 
-    private Map<WorkExecutionStatus, Long> countsByStatus(UUID executionGroupId) {
-        return executionRepository.countStatusesByExecutionGroupId(executionGroupId)
-                .stream()
-                .collect(Collectors.toMap(
-                        WorkExecutionRepository.ExecutionStatusCountProjection::getStatus,
-                        projection -> projection.getExecutionCount() == null ? 0L : projection.getExecutionCount(),
-                        Long::sum,
-                        () -> new EnumMap<>(WorkExecutionStatus.class)
-                ));
-    }
-
     private Map<UUID, ExecutionAssignment> assignmentsByExecutionId(Collection<UUID> executionIds) {
+        if (executionIds.isEmpty()) {
+            return Map.of();
+        }
+
         return assignmentRepository.findByExecution_IdIn(executionIds)
                 .stream()
                 .collect(Collectors.toMap(
@@ -212,7 +234,9 @@ public class AdminExecutionGroupQueryService {
 
     private static AdminExecutionGroupDetailResponseDto toDetail(
             ExecutionGroup group,
-            Map<WorkExecutionStatus, Long> counts
+            Map<WorkExecutionStatus, Long> counts,
+            List<WorkExecution> children,
+            Map<UUID, ExecutionAssignment> assignments
     ) {
         return new AdminExecutionGroupDetailResponseDto(
                 group.getId(),
@@ -230,7 +254,8 @@ public class AdminExecutionGroupQueryService {
                 group.getCompletedAt(),
                 group.getCancelledAt(),
                 safeText(group.getFailureCode()),
-                safeFailureMessage(group.getFailureMessage())
+                safeFailureMessage(group.getFailureMessage()),
+                toObservability(group, children, assignments)
         );
     }
 
@@ -260,6 +285,15 @@ public class AdminExecutionGroupQueryService {
                 .sum();
     }
 
+    private static Map<WorkExecutionStatus, Long> countsByStatus(List<WorkExecution> executions) {
+        return executions.stream()
+                .collect(Collectors.groupingBy(
+                        WorkExecution::getStatus,
+                        () -> new EnumMap<>(WorkExecutionStatus.class),
+                        Collectors.counting()
+                ));
+    }
+
     private static long countStatuses(
             Map<WorkExecutionStatus, Long> counts,
             Collection<WorkExecutionStatus> statuses
@@ -278,6 +312,106 @@ public class AdminExecutionGroupQueryService {
             }
         }
         return result;
+    }
+
+    private static AdminExecutionGroupDetailResponseDto.ObservabilityResponseDto toObservability(
+            ExecutionGroup group,
+            List<WorkExecution> children,
+            Map<UUID, ExecutionAssignment> assignments
+    ) {
+        Map<WorkExecutionStatus, Long> shardCounts = countsByStatus(children, WorkExecutionGroupRole.SHARD);
+        Map<WorkExecutionStatus, Long> mergeCounts = countsByStatus(children, WorkExecutionGroupRole.MERGE);
+        List<WorkExecution> mergeExecutions = children.stream()
+                .filter(execution -> execution.getGroupRole() == WorkExecutionGroupRole.MERGE)
+                .toList();
+        WorkExecution representativeMerge = mergeExecutions.stream()
+                .min(Comparator.comparing(
+                                WorkExecution::getCreatedAt,
+                                Comparator.nullsLast(Comparator.naturalOrder())
+                        )
+                        .thenComparing(WorkExecution::getId))
+                .orElse(null);
+        ExecutionAssignment representativeAssignment = representativeMerge == null
+                ? null
+                : assignments.get(representativeMerge.getId());
+
+        return new AdminExecutionGroupDetailResponseDto.ObservabilityResponseDto(
+                TERMINAL_GROUP_STATUSES.contains(group.getStatus()),
+                group.getStatus() == ExecutionGroupStatus.CANCELLING,
+                countStatuses(countsByStatus(children), ACTIVE_CHILD_OBSERVABILITY_STATUSES) > 0,
+                countStatus(children, WorkExecutionStatus.QUEUED) > 0,
+                ACTIONABLE_GROUP_STATUSES.contains(group.getStatus()),
+                ACTIONABLE_GROUP_STATUSES.contains(group.getStatus()),
+                toChildRoleCounts(shardCounts),
+                toMergeObservability(mergeExecutions, representativeMerge, representativeAssignment, mergeCounts)
+        );
+    }
+
+    private static AdminExecutionGroupDetailResponseDto.MergeObservabilityResponseDto toMergeObservability(
+            List<WorkExecution> mergeExecutions,
+            WorkExecution representativeMerge,
+            ExecutionAssignment representativeAssignment,
+            Map<WorkExecutionStatus, Long> counts
+    ) {
+        return new AdminExecutionGroupDetailResponseDto.MergeObservabilityResponseDto(
+                !mergeExecutions.isEmpty(),
+                representativeMerge == null ? null : representativeMerge.getId(),
+                representativeMerge == null ? null : representativeMerge.getStatus().name(),
+                representativeAssignment == null ? null : representativeAssignment.getWorker().getId(),
+                representativeAssignment == null ? null : representativeAssignment.getWorker().getHostname(),
+                totalExecutions(counts),
+                countStatus(counts, WorkExecutionStatus.QUEUED),
+                countStatus(counts, WorkExecutionStatus.ASSIGNED),
+                countStatus(counts, WorkExecutionStatus.CLAIMED),
+                countStatus(counts, WorkExecutionStatus.RUNNING),
+                countStatus(counts, WorkExecutionStatus.SUCCEEDED),
+                countStatus(counts, WorkExecutionStatus.FAILED),
+                countStatus(counts, WorkExecutionStatus.CANCELLED),
+                countStatus(counts, WorkExecutionStatus.EXPIRED),
+                countStatuses(counts, TERMINAL_EXECUTION_STATUSES),
+                totalExecutions(counts) - countStatuses(counts, TERMINAL_EXECUTION_STATUSES)
+        );
+    }
+
+    private static AdminExecutionGroupDetailResponseDto.ChildRoleCountsResponseDto toChildRoleCounts(
+            Map<WorkExecutionStatus, Long> counts
+    ) {
+        return new AdminExecutionGroupDetailResponseDto.ChildRoleCountsResponseDto(
+                totalExecutions(counts),
+                countStatus(counts, WorkExecutionStatus.QUEUED),
+                countStatus(counts, WorkExecutionStatus.ASSIGNED),
+                countStatus(counts, WorkExecutionStatus.CLAIMED),
+                countStatus(counts, WorkExecutionStatus.RUNNING),
+                countStatus(counts, WorkExecutionStatus.SUCCEEDED),
+                countStatus(counts, WorkExecutionStatus.FAILED),
+                countStatus(counts, WorkExecutionStatus.CANCELLED),
+                countStatus(counts, WorkExecutionStatus.EXPIRED),
+                countStatuses(counts, TERMINAL_EXECUTION_STATUSES),
+                totalExecutions(counts) - countStatuses(counts, TERMINAL_EXECUTION_STATUSES)
+        );
+    }
+
+    private static Map<WorkExecutionStatus, Long> countsByStatus(
+            List<WorkExecution> executions,
+            WorkExecutionGroupRole role
+    ) {
+        return executions.stream()
+                .filter(execution -> execution.getGroupRole() == role)
+                .collect(Collectors.groupingBy(
+                        WorkExecution::getStatus,
+                        () -> new EnumMap<>(WorkExecutionStatus.class),
+                        Collectors.counting()
+                ));
+    }
+
+    private static long countStatus(List<WorkExecution> executions, WorkExecutionStatus status) {
+        return executions.stream()
+                .filter(execution -> execution.getStatus() == status)
+                .count();
+    }
+
+    private static long countStatus(Map<WorkExecutionStatus, Long> counts, WorkExecutionStatus status) {
+        return counts.getOrDefault(status, 0L);
     }
 
     private static LocalDateTime executionUpdatedAt(WorkExecution execution) {
