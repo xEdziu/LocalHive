@@ -87,6 +87,16 @@ public class ExecutionGroupSchedulingService {
     }
 
     @Transactional
+    public void reconcileQueuedShards(UUID executionGroupId, LocalDateTime now) {
+        LocalDateTime validNow = Objects.requireNonNull(now, "now must not be null.");
+        refreshGroupStatus(executionGroupId, validNow);
+        if (canScheduleMoreShards(executionGroupId)) {
+            scheduleQueuedShards(executionGroupId, ExecutionAssignmentMode.AUTO, null, validNow);
+        }
+        refreshGroupStatus(executionGroupId, validNow);
+    }
+
+    @Transactional
     public void refreshGroupStatus(UUID executionGroupId, LocalDateTime now) {
         ExecutionGroup group = findGroup(executionGroupId);
         if (PRESERVED_GROUP_STATUSES.contains(group.getStatus())) {
@@ -127,7 +137,11 @@ public class ExecutionGroupSchedulingService {
 
     @Transactional
     public void scheduleQueuedMerge(UUID executionGroupId, LocalDateTime now) {
-        findGroup(executionGroupId);
+        ExecutionGroup group = findGroup(executionGroupId);
+        if (group.getStatus() != ExecutionGroupStatus.MERGING) {
+            return;
+        }
+
         LocalDateTime validNow = Objects.requireNonNull(now, "now must not be null.");
         for (WorkExecution execution : executionRepository.findQueuedMergeExecutionsByExecutionGroupId(executionGroupId)) {
             Worker worker;
@@ -213,7 +227,11 @@ public class ExecutionGroupSchedulingService {
                                       ExecutionAssignmentMode firstAssignmentMode,
                                       UUID preferredWorkerId,
                                       LocalDateTime now) {
-        findGroup(executionGroupId);
+        ExecutionGroup group = findGroup(executionGroupId);
+        if (!canScheduleQueuedShardsFor(group)) {
+            return;
+        }
+
         boolean firstShard = true;
         for (WorkExecution execution : executionRepository.findQueuedShardExecutionsByExecutionGroupId(executionGroupId)) {
             ExecutionAssignmentMode assignmentMode = firstShard ? firstAssignmentMode : ExecutionAssignmentMode.AUTO;
@@ -237,10 +255,14 @@ public class ExecutionGroupSchedulingService {
 
     private boolean canScheduleMoreShards(UUID executionGroupId) {
         ExecutionGroup group = findGroup(executionGroupId);
-        return !PRESERVED_GROUP_STATUSES.contains(group.getStatus())
-                && group.getStatus() != ExecutionGroupStatus.FAILED
-                && group.getStatus() != ExecutionGroupStatus.PARTIALLY_FAILED
-                && group.getStatus() != ExecutionGroupStatus.SUCCEEDED;
+        return canScheduleQueuedShardsFor(group);
+    }
+
+    private static boolean canScheduleQueuedShardsFor(ExecutionGroup group) {
+        ExecutionGroupStatus status = group.getStatus();
+        return status == ExecutionGroupStatus.CREATED
+                || status == ExecutionGroupStatus.SCHEDULING
+                || status == ExecutionGroupStatus.RUNNING;
     }
 
     private Worker selectWorker(WorkExecution execution,

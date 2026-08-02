@@ -1,6 +1,6 @@
 # Admin Execution Groups API
 
-M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready.
+M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile.
 
 An `ExecutionGroup` is group-level metadata for sharding. Child work remains ordinary `WorkExecution` records with nullable group metadata. Master creates `SHARD` children, expands a controlled Docker command template for each shard, assigns as many shards as currently eligible workers allow, and schedules later waves when child executions report terminal status. With `mergeMode = AGENT`, Master later creates one `MERGE` child execution after shard policy allows merge.
 
@@ -198,10 +198,11 @@ Scheduling is event-driven:
 2. Initial scheduling assigns as many queued shards as eligible workers allow.
 3. When a child shard reaches a terminal status through the existing worker report flow, Master tries to assign the next queued shard.
 4. For `mergeMode = AGENT`, when shard policy allows merge, Master prepares the derived workspace, creates one queued `MERGE` execution, and tries to assign it with `AUTO` selection.
+5. Admins can trigger the same safe scheduling/reconciliation pass manually with `POST /api/admin/execution-groups/{executionGroupId}/reconcile`.
 
 Shard scheduling reuses M13 capability-aware worker selection. Eligibility still requires an approved, online, available worker with no active execution, enough shared RAM and CPU, a matching enabled executor capability, and a Docker policy that allows the requested image and resources.
 
-More shards than workers are supported. If no worker is eligible during creation or after a child terminal report, queued shards remain `QUEUED` and the group remains safe to inspect through the read APIs. If no worker is eligible for the merge execution, the `MERGE` child remains `QUEUED` and the group remains `MERGING`. M19 does not include a background scheduler or manual reconcile endpoint, so a future worker becoming eligible does not automatically trigger group scheduling until another event triggers scheduling.
+More shards than workers are supported. If no worker is eligible during creation, after a child terminal report, or during manual reconcile, queued shards remain `QUEUED` and the group remains safe to inspect through the read APIs. If no worker is eligible for the merge execution, the `MERGE` child remains `QUEUED` and the group remains `MERGING`. M20 does not include a background scheduler, so a future worker becoming eligible does not automatically trigger group scheduling until another event or manual reconcile triggers scheduling.
 
 ## Group Status Derivation
 
@@ -224,6 +225,82 @@ For `mergeMode = AGENT`:
 - all shards succeeded and merge succeeded derives `SUCCEEDED`,
 - mixed shard results with `ALLOW_PARTIAL` and merge succeeded derives `PARTIALLY_FAILED`,
 - merge failure, cancellation, or expiry derives `FAILED`.
+
+If group cancellation was requested and the group is `CANCELLING`, normal success, partial failure, and merge derivation are suppressed. Once no child execution remains `CLAIMED` or `RUNNING`, the group becomes `CANCELLED`.
+
+## Cancel Execution Group
+
+```http
+POST /api/admin/execution-groups/{executionGroupId}/cancel
+```
+
+Request body is optional:
+
+```json
+{
+  "reason": "Admin requested cancellation"
+}
+```
+
+Behavior:
+
+- existing non-terminal groups return `200` with the safe group detail response,
+- missing group returns `404`,
+- terminal groups return `409`,
+- blank or absent `reason` uses `Execution group cancelled by admin.`,
+- nonblank `reason` is trimmed,
+- `reason` longer than 500 characters returns `400`,
+- group failure code is `ADMIN_GROUP_CANCELLED`,
+- queued and assigned child executions are marked `CANCELLED`,
+- claimed and running child executions are not interrupted,
+- terminal child executions are unchanged,
+- assignments and artifacts are not deleted,
+- no Docker container is killed,
+- no Agent interrupt is sent,
+- worker claim/report protocol is unchanged.
+
+If no child execution remains `CLAIMED` or `RUNNING`, the group becomes `CANCELLED` and both `cancelledAt` and `completedAt` are set. If any child execution remains `CLAIMED` or `RUNNING`, the group becomes `CANCELLING`; `cancelledAt`, `failureCode`, and `failureMessage` are set, but `completedAt` remains null until active children report terminal status.
+
+Cancelable group statuses:
+
+```text
+CREATED
+SCHEDULING
+RUNNING
+MERGING
+CANCELLING
+```
+
+Terminal statuses rejected by cancel:
+
+```text
+SUCCEEDED
+FAILED
+PARTIALLY_FAILED
+CANCELLED
+EXPIRED
+```
+
+## Reconcile Execution Group
+
+```http
+POST /api/admin/execution-groups/{executionGroupId}/reconcile
+```
+
+Behavior:
+
+- existing groups return `200` with the safe group detail response,
+- missing group returns `404`,
+- terminal groups are treated as safe no-ops,
+- `CANCELLING` groups never schedule work and are finalized to `CANCELLED` when no child remains `CLAIMED` or `RUNNING`,
+- active groups schedule eligible queued `SHARD` executions,
+- `mergeMode = AGENT` groups create one `MERGE` execution when shard policy allows merge and no merge already exists,
+- queued `MERGE` executions are scheduled when a worker is eligible,
+- if no eligible worker exists, queued work remains `QUEUED`,
+- repeated reconcile calls do not duplicate children, assignments, or merge executions,
+- no Docker container is killed,
+- no Agent interrupt is sent,
+- no background scheduler is introduced.
 
 ## List Execution Groups
 
@@ -376,12 +453,13 @@ The worker claim/report protocol is unchanged.
 
 ## Current Limitations
 
-M19 does not implement:
+M20 does not implement:
 
 - `mergeMode = MASTER`,
-- manual reconcile endpoint,
 - background scheduler,
-- group cancel,
+- Docker kill,
+- Agent interrupt,
+- retry or requeue policy,
 - Agent changes,
 - Docker executor changes,
 - frontend UI,
@@ -390,4 +468,4 @@ M19 does not implement:
 
 ## Future Extensions
 
-Future milestones may add manual reconcile, background scheduling, group cancellation, Master-side merge for controlled formats, group artifact aggregation, selection diagnostics for groups, retry and requeue policies, and frontend views.
+Future milestones may add background scheduling, Agent-side cooperative cancellation, Master-side merge for controlled formats, group artifact aggregation, selection diagnostics for groups, retry and requeue policies, and frontend views.

@@ -1,10 +1,12 @@
 package dev.adrian.goral.localhivebackend.controller;
 
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupStatus;
+import dev.adrian.goral.localhivebackend.dto.AdminCancelExecutionRequestDto;
 import dev.adrian.goral.localhivebackend.dto.AdminCreateExecutionGroupRequestDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupChildExecutionResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupDetailResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupListResponseDto;
+import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupControlService;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupCreationService;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupQueryService;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
@@ -34,6 +37,7 @@ public class AdminExecutionGroupController {
 
     private final AdminExecutionGroupCreationService creationService;
     private final AdminExecutionGroupQueryService queryService;
+    private final AdminExecutionGroupControlService controlService;
 
     @PostMapping
     public ResponseEntity<AdminExecutionGroupDetailResponseDto> createGroup(
@@ -78,6 +82,48 @@ public class AdminExecutionGroupController {
     ) {
         return queryService.listChildExecutions(executionGroupId)
                 .map(ResponseEntity::ok)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Execution group not found."));
+    }
+
+    @PostMapping("/{executionGroupId}/cancel")
+    public ResponseEntity<AdminExecutionGroupDetailResponseDto> cancelGroup(
+            @PathVariable UUID executionGroupId,
+            @RequestBody(required = false) AdminCancelExecutionRequestDto request
+    ) {
+        try {
+            controlService.cancelGroup(
+                    executionGroupId,
+                    request == null ? null : request.reason(),
+                    LocalDateTime.now()
+            );
+            return ResponseEntity.ok(groupDetail(executionGroupId));
+        } catch (NoSuchElementException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        } catch (IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+        }
+    }
+
+    @PostMapping("/{executionGroupId}/reconcile")
+    public ResponseEntity<AdminExecutionGroupDetailResponseDto> reconcileGroup(
+            @PathVariable UUID executionGroupId
+    ) {
+        try {
+            controlService.reconcileGroup(executionGroupId, LocalDateTime.now());
+            return ResponseEntity.ok(groupDetail(executionGroupId));
+        } catch (NoSuchElementException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        } catch (IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+        }
+    }
+
+    private AdminExecutionGroupDetailResponseDto groupDetail(UUID executionGroupId) {
+        return queryService.getGroup(executionGroupId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Execution group not found."));
     }
 

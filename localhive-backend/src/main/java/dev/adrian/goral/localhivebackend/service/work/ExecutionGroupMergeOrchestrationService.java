@@ -55,19 +55,32 @@ public class ExecutionGroupMergeOrchestrationService {
             return;
         }
 
+        createMergeIfReady(executionGroupId, now);
+    }
+
+    @Transactional
+    public void reconcileGroup(UUID executionGroupId, LocalDateTime now) {
+        createMergeIfReady(executionGroupId, now);
+    }
+
+    private void createMergeIfReady(UUID executionGroupId, LocalDateTime now) {
+        UUID validExecutionGroupId = Objects.requireNonNull(
+                executionGroupId,
+                "executionGroupId must not be null."
+        );
         LocalDateTime validNow = Objects.requireNonNull(now, "now must not be null.");
         ExecutionGroup group = groupRepository.findById(executionGroupId)
-                .orElseThrow(() -> new IllegalStateException("Execution group not found: " + executionGroupId));
+                .orElseThrow(() -> new IllegalStateException("Execution group not found: " + validExecutionGroupId));
         if (group.getMergeMode() != ExecutionGroupMergeMode.AGENT || group.getStatus() != ExecutionGroupStatus.MERGING) {
             return;
         }
-        if (!executionRepository.findByExecutionGroupIdAndGroupRole(executionGroupId, WorkExecutionGroupRole.MERGE)
+        if (!executionRepository.findByExecutionGroupIdAndGroupRole(validExecutionGroupId, WorkExecutionGroupRole.MERGE)
                 .isEmpty()) {
             return;
         }
 
         List<WorkExecution> shards = executionRepository.findByExecutionGroupIdAndGroupRole(
-                executionGroupId,
+                validExecutionGroupId,
                 WorkExecutionGroupRole.SHARD
         );
         if (!isShardPhaseReady(group, shards)) {

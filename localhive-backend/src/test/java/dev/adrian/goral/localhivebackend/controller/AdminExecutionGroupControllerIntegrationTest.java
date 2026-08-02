@@ -20,6 +20,7 @@ import dev.adrian.goral.localhivebackend.domain.work.WorkExecution;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionAssignmentMode;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupFailurePolicy;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupMergeMode;
+import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupStatus;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkType;
 import dev.adrian.goral.localhivebackend.repository.UserRepository;
 import dev.adrian.goral.localhivebackend.repository.WorkerCapabilitiesRepository;
@@ -39,6 +40,7 @@ import dev.adrian.goral.localhivebackend.service.artifact.ArtifactStorageService
 import dev.adrian.goral.localhivebackend.service.work.CreateOneOffExecutionCommand;
 import dev.adrian.goral.localhivebackend.service.work.DefinitionContentCommand;
 import dev.adrian.goral.localhivebackend.service.work.DefinitionManagementService;
+import dev.adrian.goral.localhivebackend.service.work.ExecutionGroupCancellationService;
 import dev.adrian.goral.localhivebackend.service.work.WorkExecutionAssignmentService;
 import dev.adrian.goral.localhivebackend.service.work.WorkExecutionCreationService;
 import dev.adrian.goral.localhivebackend.service.work.WorkExecutionLifecycleService;
@@ -52,6 +54,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.testcontainers.junit.jupiter.Container;
@@ -226,6 +229,18 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("Authentication failed."));
 
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", group.getId())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
         mockMvc.perform(get("/api/admin/execution-groups")
                         .header(API_KEY_HEADER, credentials.rawApiKey())
                         .accept(MediaType.APPLICATION_JSON))
@@ -252,6 +267,20 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("Authentication failed."));
 
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
+                        .header(API_KEY_HEADER, credentials.rawApiKey())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", group.getId())
+                        .header(API_KEY_HEADER, credentials.rawApiKey())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
         mockMvc.perform(get("/api/admin/execution-groups")
                         .with(user("operator").roles("USER"))
                         .accept(MediaType.APPLICATION_JSON))
@@ -278,6 +307,20 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message").value("Access denied."));
 
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
+                        .with(user("operator").roles("USER"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("Access denied."));
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", group.getId())
+                        .with(user("operator").roles("USER"))
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("Access denied."));
+
         mockMvc.perform(get("/api/admin/execution-groups")
                         .with(admin())
                         .accept(MediaType.APPLICATION_JSON))
@@ -289,6 +332,11 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isOk());
 
         mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/executions", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", group.getId())
                         .with(admin())
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk());
@@ -300,6 +348,14 @@ class AdminExecutionGroupControllerIntegrationTest {
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.executionGroupId").exists());
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
     }
 
     @Test
@@ -461,6 +517,245 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .getContentAsString();
 
         assertSafeAdminResponse(adminExecutionDetailResponse);
+    }
+
+    @Test
+    void shouldCancelGroupWithQueuedChildrenAndDefaultReason() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroup("Queued cancel group", 2);
+        createQueuedShardExecution(group, version, 0, 2, "Queued first");
+        createQueuedShardExecution(group, version, 1, 2, "Queued second");
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.cancelledAt").exists())
+                .andExpect(jsonPath("$.completedAt").exists())
+                .andExpect(jsonPath("$.failureCode")
+                        .value(ExecutionGroupCancellationService.ADMIN_GROUP_CANCELLED_FAILURE_CODE))
+                .andExpect(jsonPath("$.failureMessage")
+                        .value(ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE))
+                .andExpect(jsonPath("$.childExecutionCounts.CANCELLED").value(2))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminResponse(response);
+        assertThat(childExecutions(group.getId()))
+                .allSatisfy(child -> {
+                    assertThat(child.getStatus().name()).isEqualTo("CANCELLED");
+                    assertThat(child.getFailureCode()).isEqualTo("ADMIN_CANCELLED");
+                    assertThat(child.getFailureMessage())
+                            .isEqualTo(ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE);
+                });
+    }
+
+    @Test
+    void shouldCancelAssignedGroupChildrenWithoutDeletingAssignments() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroup("Assigned cancel group", 1);
+        Worker worker = createApprovedWorker("assigned-cancel");
+        WorkExecution child = createShardExecution(group, version, worker, 0, 1, "Assigned child");
+        long assignmentCount = assignmentRepository.count();
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "  Admin requested group stop  "
+                                }
+                                """)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.failureMessage").value("Admin requested group stop"))
+                .andExpect(jsonPath("$.childExecutionCounts.CANCELLED").value(1))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminResponse(response);
+        assertThat(assignmentRepository.count()).isEqualTo(assignmentCount);
+        assertThat(executionRepository.findById(child.getId()))
+                .hasValueSatisfying(stored -> {
+                    assertThat(stored.getStatus().name()).isEqualTo("CANCELLED");
+                    assertThat(stored.getCompletedAt()).isNotNull();
+                    assertThat(stored.getCancelledAt()).isNotNull();
+                    assertThat(stored.getFailureCode()).isEqualTo("ADMIN_CANCELLED");
+                    assertThat(stored.getFailureMessage()).isEqualTo("Admin requested group stop");
+                });
+    }
+
+    @Test
+    void shouldKeepRunningChildActiveDuringGroupCancelAndFinalizeAfterReport() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroup("Running cancel group", 2);
+        WorkerCredentials worker = createApprovedWorkerCredentials("running-cancel");
+        WorkExecution runningChild = createShardExecution(group, version, worker.worker(), 0, 2, "Running child");
+        WorkExecution queuedChild = createQueuedShardExecution(group, version, 1, 2, "Queued child");
+        ClaimedShard claimed = claimNext(worker);
+        assertThat(claimed.executionId()).isEqualTo(runningChild.getId());
+        reportRunning(worker, claimed);
+
+        String cancellingResponse = mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "Stop after active child"
+                                }
+                                """)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLING"))
+                .andExpect(jsonPath("$.cancelledAt").exists())
+                .andExpect(jsonPath("$.completedAt").value(nullValue()))
+                .andExpect(jsonPath("$.childExecutionCounts.RUNNING").value(1))
+                .andExpect(jsonPath("$.childExecutionCounts.CANCELLED").value(1))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertSafeAdminResponse(cancellingResponse);
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLING"))
+                .andExpect(jsonPath("$.childExecutionCounts.RUNNING").value(1))
+                .andExpect(jsonPath("$.childExecutionCounts.CANCELLED").value(1));
+
+        reportSucceededAfterRunning(worker, claimed);
+        assertGroupCounts(group.getId(), "CANCELLED", 0, 2, 0, 0);
+        assertThat(executionRepository.findById(runningChild.getId()))
+                .hasValueSatisfying(stored -> assertThat(stored.getStatus().name()).isEqualTo("SUCCEEDED"));
+        assertThat(executionRepository.findById(queuedChild.getId()))
+                .hasValueSatisfying(stored -> assertThat(stored.getStatus().name()).isEqualTo("CANCELLED"));
+    }
+
+    @Test
+    void shouldCancelQueuedMergeExecutionWithoutDeletingShardOutputs() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        WorkerCredentials worker = createApprovedWorkerCredentials("queued-merge-cancel");
+        storeDockerCapabilities(worker.worker());
+        UUID executionGroupId = createAgentMergeGroup(
+                version.getId(),
+                "Queued merge cancel",
+                1,
+                "FAIL_FAST",
+                baseMergeWorkspace.getId()
+        );
+
+        ClaimedShard shard = claimNext(worker);
+        reportRunning(worker, shard);
+        workerCapabilitiesRepository.deleteById(worker.worker().getId());
+        reportSucceededWithOutputAfterRunning(worker, shard, "result.json", "{}");
+        long assignmentCount = assignmentRepository.count();
+        long artifactCount = artifactRepository.count();
+        List<WorkExecution> merges = mergeExecutions(executionGroupId);
+        assertThat(merges).hasSize(1);
+        assertThat(merges.get(0).getStatus().name()).isEqualTo("QUEUED");
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", executionGroupId)
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.childExecutionCounts.SUCCEEDED").value(1))
+                .andExpect(jsonPath("$.childExecutionCounts.CANCELLED").value(1))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminResponse(response);
+        assertThat(assignmentRepository.count()).isEqualTo(assignmentCount);
+        assertThat(artifactRepository.count()).isEqualTo(artifactCount);
+        assertThat(mergeExecutions(executionGroupId)).singleElement()
+                .satisfies(merge -> assertThat(merge.getStatus().name()).isEqualTo("CANCELLED"));
+    }
+
+    @Test
+    void shouldNotInterruptRunningMergeAndShouldFinalizeCancelledGroupAfterMergeReport() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        WorkerCredentials worker = createApprovedWorkerCredentials("running-merge-cancel");
+        storeDockerCapabilities(worker.worker());
+        UUID executionGroupId = createAgentMergeGroup(
+                version.getId(),
+                "Running merge cancel",
+                1,
+                "FAIL_FAST",
+                baseMergeWorkspace.getId()
+        );
+
+        reportSucceededWithOutput(worker, claimNext(worker), "result.json", "{}");
+        WorkExecution merge = mergeExecutions(executionGroupId).get(0);
+        ClaimedShard mergeClaim = claimNext(worker);
+        assertThat(mergeClaim.executionId()).isEqualTo(merge.getId());
+        reportRunning(worker, mergeClaim);
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", executionGroupId)
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLING"))
+                .andExpect(jsonPath("$.childExecutionCounts.RUNNING").value(1));
+
+        assertThat(executionRepository.findById(merge.getId()))
+                .hasValueSatisfying(stored -> assertThat(stored.getStatus().name()).isEqualTo("RUNNING"));
+
+        reportFailedAfterRunning(worker, mergeClaim);
+        assertGroupCounts(executionGroupId, "CANCELLED", 0, 2, 0, 0);
+        assertThat(groupRepository.findById(executionGroupId))
+                .hasValueSatisfying(group -> {
+                    assertThat(group.getFailureCode())
+                            .isEqualTo(ExecutionGroupCancellationService.ADMIN_GROUP_CANCELLED_FAILURE_CODE);
+                    assertThat(group.getFailureMessage())
+                            .isEqualTo(ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE);
+                });
+    }
+
+    @Test
+    void shouldValidateGroupCancelRequestAndRejectTerminalGroups() throws Exception {
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", UUID.randomUUID())
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Execution group not found."));
+
+        ExecutionGroup tooLongReason = createGroup("Too long cancel reason", 1);
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", tooLongReason.getId())
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "%s"
+                                }
+                                """.formatted("x".repeat(ExecutionGroupCancellationService.MAX_REASON_LENGTH + 1)))
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(
+                        "reason must be less than or equal to "
+                                + ExecutionGroupCancellationService.MAX_REASON_LENGTH
+                                + " characters."
+                ));
+        assertThat(groupRepository.findById(tooLongReason.getId()))
+                .hasValueSatisfying(group -> assertThat(group.getStatus().name()).isEqualTo("CREATED"));
+
+        assertGroupCancelConflict(succeededGroup(), "SUCCEEDED");
+        assertGroupCancelConflict(failedGroup(), "FAILED");
+        assertGroupCancelConflict(partiallyFailedGroup(), "PARTIALLY_FAILED");
+        assertGroupCancelConflict(cancelledGroup(), "CANCELLED");
+        assertGroupCancelConflict(expiredGroup(), "EXPIRED");
     }
 
     @Test
@@ -1165,6 +1460,174 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .hasValueSatisfying(group -> assertThat(group.getFailureCode()).isEqualTo("MERGE_EXECUTION_FAILED"));
     }
 
+    @Test
+    void shouldReconcileQueuedShardsWithEligibleWorkerAndPreserveOneActiveExecutionPerWorker() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        ExecutionGroup group = createGroup("Reconcile shard group", 2);
+        createQueuedShardExecution(group, version, 0, 2, "Reconcile first");
+        createQueuedShardExecution(group, version, 1, 2, "Reconcile second");
+        Worker worker = createApprovedWorker("reconcile-shards");
+        storeDockerCapabilities(worker);
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RUNNING"))
+                .andExpect(jsonPath("$.childExecutionCounts.ASSIGNED").value(1))
+                .andExpect(jsonPath("$.childExecutionCounts.QUEUED").value(1))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminResponse(response);
+        assertThat(assignmentRepository.count()).isEqualTo(1);
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.childExecutionCounts.ASSIGNED").value(1))
+                .andExpect(jsonPath("$.childExecutionCounts.QUEUED").value(1));
+        assertThat(assignmentRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldLeaveQueuedShardsUnchangedWhenReconcileHasNoEligibleWorker() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        ExecutionGroup group = createGroup("Reconcile no worker group", 2);
+        createQueuedShardExecution(group, version, 0, 2, "No worker first");
+        createQueuedShardExecution(group, version, 1, 2, "No worker second");
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RUNNING"))
+                .andExpect(jsonPath("$.childExecutionCounts.QUEUED").value(2));
+
+        assertThat(childExecutions(group.getId()))
+                .allSatisfy(child -> assertThat(child.getStatus().name()).isEqualTo("QUEUED"));
+    }
+
+    @Test
+    void shouldReconcileAgentMergeExactlyOnceAfterShardPhaseCompletes() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        UUID executionGroupId = createAgentMergeGroup(
+                version.getId(),
+                "Manual merge reconcile",
+                2,
+                "FAIL_FAST",
+                baseMergeWorkspace.getId()
+        );
+        Worker worker = createApprovedWorker("manual-merge-reconcile");
+        storeDockerCapabilities(worker);
+
+        for (WorkExecution shard : shardExecutions(executionGroupId)) {
+            assignmentService.assignExecution(
+                    shard.getId(),
+                    worker.getId(),
+                    ExecutionAssignmentMode.AUTO,
+                    BASE_TIME.plusSeconds(shard.getShardIndex())
+            );
+            lifecycleService.markClaimed(shard.getId(), BASE_TIME.plusSeconds(10 + shard.getShardIndex()));
+            lifecycleService.markRunning(shard.getId(), BASE_TIME.plusSeconds(20 + shard.getShardIndex()));
+            lifecycleService.markSucceeded(shard.getId(), BASE_TIME.plusSeconds(30 + shard.getShardIndex()));
+        }
+        assertThat(mergeExecutions(executionGroupId)).isEmpty();
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", executionGroupId)
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("MERGING"))
+                .andExpect(jsonPath("$.childExecutionCounts.SUCCEEDED").value(2))
+                .andExpect(jsonPath("$.childExecutionCounts.ASSIGNED").value(1))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertSafeAdminResponse(response);
+
+        List<WorkExecution> merges = mergeExecutions(executionGroupId);
+        assertThat(merges).hasSize(1);
+        assertThat(merges.get(0).getStatus().name()).isEqualTo("ASSIGNED");
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", executionGroupId)
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("MERGING"));
+        assertThat(mergeExecutions(executionGroupId)).hasSize(1);
+    }
+
+    @Test
+    void shouldReconcileQueuedMergeWhenWorkerBecomesEligible() throws Exception {
+        WorkDefinitionVersion version = dockerVersion();
+        Artifact baseMergeWorkspace = storeBaseMergeWorkspace();
+        WorkerCredentials worker = createApprovedWorkerCredentials("queued-merge-reconcile");
+        storeDockerCapabilities(worker.worker());
+        UUID executionGroupId = createAgentMergeGroup(
+                version.getId(),
+                "Queued merge reconcile",
+                1,
+                "FAIL_FAST",
+                baseMergeWorkspace.getId()
+        );
+
+        ClaimedShard shard = claimNext(worker);
+        reportRunning(worker, shard);
+        workerCapabilitiesRepository.deleteById(worker.worker().getId());
+        reportSucceededAfterRunning(worker, shard);
+
+        WorkExecution queuedMerge = mergeExecutions(executionGroupId).get(0);
+        assertThat(queuedMerge.getStatus().name()).isEqualTo("QUEUED");
+
+        storeDockerCapabilities(worker.worker());
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", executionGroupId)
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("MERGING"))
+                .andExpect(jsonPath("$.childExecutionCounts.ASSIGNED").value(1));
+
+        assertThat(executionRepository.findById(queuedMerge.getId()))
+                .hasValueSatisfying(merge -> assertThat(merge.getStatus().name()).isEqualTo("ASSIGNED"));
+    }
+
+    @Test
+    void shouldReconcileTerminalAndCancellingGroupsAsSafeNoOps() throws Exception {
+        ExecutionGroup terminal = succeededGroup();
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", terminal.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"));
+
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup cancelling = createGroup("Manual cancelling reconcile", 1);
+        createQueuedShardExecution(cancelling, version, 0, 1, "Cancellable child");
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", cancelling.getId())
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", cancelling.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
+
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", UUID.randomUUID())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Execution group not found."));
+    }
+
     private org.springframework.test.web.servlet.ResultActions expectBadCreate(String request) throws Exception {
         return mockMvc.perform(post("/api/admin/execution-groups")
                         .with(admin())
@@ -1254,6 +1717,17 @@ class AdminExecutionGroupControllerIntegrationTest {
         }
     }
 
+    private void assertGroupCancelConflict(ExecutionGroup group, String statusName) throws Exception {
+        mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message")
+                        .value("Cannot cancel execution group from status " + statusName + "."));
+    }
+
     private ClaimedShard claimNext(WorkerCredentials worker) throws Exception {
         String response = mockMvc.perform(post(
                         "/api/workers/{workerId}/assigned-executions/claim-next",
@@ -1283,6 +1757,13 @@ class AdminExecutionGroupControllerIntegrationTest {
                                            String relativePath,
                                            String content) throws Exception {
         reportRunning(worker, claimedShard);
+        reportSucceededWithOutputAfterRunning(worker, claimedShard, relativePath, content);
+    }
+
+    private void reportSucceededWithOutputAfterRunning(WorkerCredentials worker,
+                                                       ClaimedShard claimedShard,
+                                                       String relativePath,
+                                                       String content) throws Exception {
         mockMvc.perform(multipart(
                         "/api/workers/{workerId}/executions/{executionId}/artifacts/output",
                         worker.worker().getId(),
@@ -1316,6 +1797,10 @@ class AdminExecutionGroupControllerIntegrationTest {
 
     private void reportFailed(WorkerCredentials worker, ClaimedShard claimedShard) throws Exception {
         reportRunning(worker, claimedShard);
+        reportFailedAfterRunning(worker, claimedShard);
+    }
+
+    private void reportFailedAfterRunning(WorkerCredentials worker, ClaimedShard claimedShard) throws Exception {
         mockMvc.perform(post(
                         "/api/workers/{workerId}/executions/{executionId}/failed",
                         worker.worker().getId(),
@@ -1346,6 +1831,18 @@ class AdminExecutionGroupControllerIntegrationTest {
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("RUNNING"));
+    }
+
+    private List<WorkExecution> childExecutions(UUID executionGroupId) {
+        return executionRepository.findAdminExecutionsByExecutionGroupId(executionGroupId);
+    }
+
+    private List<WorkExecution> shardExecutions(UUID executionGroupId) {
+        return childExecutions(executionGroupId).stream()
+                .filter(execution -> execution.getGroupRole() != null
+                        && execution.getGroupRole().name().equals("SHARD"))
+                .sorted(Comparator.comparing(WorkExecution::getShardIndex))
+                .toList();
     }
 
     private List<WorkExecution> mergeExecutions(UUID executionGroupId) {
@@ -1524,6 +2021,44 @@ class AdminExecutionGroupControllerIntegrationTest {
                 shardCount,
                 LocalDateTime.now()
         ));
+    }
+
+    private ExecutionGroup succeededGroup() {
+        ExecutionGroup group = createGroup("Succeeded terminal group", 1);
+        group.markSucceeded(BASE_TIME);
+        return groupRepository.saveAndFlush(group);
+    }
+
+    private ExecutionGroup failedGroup() {
+        ExecutionGroup group = createGroup("Failed terminal group", 1);
+        group.markFailed("TEST_GROUP_FAILED", "Group failed before cancel.", BASE_TIME);
+        return groupRepository.saveAndFlush(group);
+    }
+
+    private ExecutionGroup partiallyFailedGroup() {
+        ExecutionGroup group = createGroup("Partially failed terminal group", 1);
+        group.markPartiallyFailed("TEST_GROUP_PARTIAL", "Group partially failed before cancel.", BASE_TIME);
+        return groupRepository.saveAndFlush(group);
+    }
+
+    private ExecutionGroup cancelledGroup() {
+        ExecutionGroup group = createGroup("Cancelled terminal group", 1);
+        group.markCancelled(
+                ExecutionGroupCancellationService.ADMIN_GROUP_CANCELLED_FAILURE_CODE,
+                ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE,
+                BASE_TIME
+        );
+        return groupRepository.saveAndFlush(group);
+    }
+
+    private ExecutionGroup expiredGroup() {
+        ExecutionGroup group = createGroup("Expired terminal group", 1);
+        ReflectionTestUtils.setField(group, "status", ExecutionGroupStatus.EXPIRED);
+        ReflectionTestUtils.setField(group, "updatedAt", BASE_TIME);
+        ReflectionTestUtils.setField(group, "completedAt", BASE_TIME);
+        ReflectionTestUtils.setField(group, "failureCode", "TEST_GROUP_EXPIRED");
+        ReflectionTestUtils.setField(group, "failureMessage", "Group expired before cancel.");
+        return groupRepository.saveAndFlush(group);
     }
 
     private WorkExecution createShardExecution(ExecutionGroup group,

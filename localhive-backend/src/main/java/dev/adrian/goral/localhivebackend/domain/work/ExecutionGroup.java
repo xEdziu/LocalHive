@@ -137,6 +137,28 @@ public class ExecutionGroup {
         markTerminalFailure(ExecutionGroupStatus.PARTIALLY_FAILED, failureCode, failureMessage, completedAt);
     }
 
+    public void markCancelling(String failureCode, String failureMessage, LocalDateTime cancelledAt) {
+        LocalDateTime validCancelledAt = Objects.requireNonNull(cancelledAt, "cancelledAt must not be null.");
+        this.status = ExecutionGroupStatus.CANCELLING;
+        this.updatedAt = validCancelledAt;
+        this.cancelledAt = validCancelledAt;
+        this.completedAt = null;
+        this.failureCode = requireNonBlank(failureCode, "failureCode");
+        this.failureMessage = requireNullableNonBlank(failureMessage, "failureMessage");
+    }
+
+    public void markCancelled(String failureCode, String failureMessage, LocalDateTime completedAt) {
+        LocalDateTime validCompletedAt = Objects.requireNonNull(completedAt, "completedAt must not be null.");
+        this.status = ExecutionGroupStatus.CANCELLED;
+        this.updatedAt = validCompletedAt;
+        if (cancelledAt == null) {
+            this.cancelledAt = validCompletedAt;
+        }
+        this.completedAt = validCompletedAt;
+        this.failureCode = requireNonBlank(failureCode, "failureCode");
+        this.failureMessage = requireNullableNonBlank(failureMessage, "failureMessage");
+    }
+
     private void markTerminalFailure(ExecutionGroupStatus status,
                                      String failureCode,
                                      String failureMessage,

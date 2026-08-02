@@ -18,6 +18,7 @@ public class WorkerExecutionReportService {
 
     private final ExecutionLeaseValidationService leaseValidationService;
     private final WorkExecutionLifecycleService lifecycleService;
+    private final ExecutionGroupCancellationService executionGroupCancellationService;
     private final ExecutionGroupSchedulingService executionGroupSchedulingService;
     private final ExecutionGroupMergeOrchestrationService mergeOrchestrationService;
 
@@ -45,6 +46,7 @@ public class WorkerExecutionReportService {
                 EnumSet.of(WorkExecutionStatus.RUNNING)
         );
         WorkExecution execution = lifecycleService.markSucceeded(executionId, validCompletedAt);
+        finalizeCancellingGroupIfNeeded(execution, validCompletedAt);
         executionGroupSchedulingService.afterTerminalChildReport(execution, validCompletedAt);
         mergeOrchestrationService.afterTerminalChildReport(execution, validCompletedAt);
         return execution;
@@ -73,6 +75,7 @@ public class WorkerExecutionReportService {
                 EnumSet.of(WorkExecutionStatus.RUNNING)
         );
         WorkExecution execution = lifecycleService.markFailed(executionId, failureCode, failureMessage, validCompletedAt);
+        finalizeCancellingGroupIfNeeded(execution, validCompletedAt);
         executionGroupSchedulingService.afterTerminalChildReport(execution, validCompletedAt);
         mergeOrchestrationService.afterTerminalChildReport(execution, validCompletedAt);
         return execution;
@@ -90,5 +93,12 @@ public class WorkerExecutionReportService {
         );
         assignment.renewLease(renewedAt.plusSeconds(WorkExecutionClaimService.LEASE_DURATION_SECONDS));
         return assignment;
+    }
+
+    private void finalizeCancellingGroupIfNeeded(WorkExecution execution, LocalDateTime now) {
+        UUID executionGroupId = execution.getExecutionGroupId();
+        if (executionGroupId != null) {
+            executionGroupCancellationService.finalizeCancellingGroupIfNoActiveChild(executionGroupId, now);
+        }
     }
 }

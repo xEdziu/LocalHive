@@ -4,11 +4,13 @@
 
 Proposed
 
-M17 implementation note: the domain foundation now includes `ExecutionGroup` persistence, nullable group metadata on `WorkExecution`, and read-only admin group APIs. Sharded creation, scheduling, reconciliation, merge/reduce, group cancellation, Agent changes, and frontend UI remain future work.
+M17 implementation note: the domain foundation added `ExecutionGroup` persistence, nullable group metadata on `WorkExecution`, and read-only admin group APIs. At the end of M17, sharded creation, scheduling, reconciliation, merge/reduce, group cancellation, Agent changes, and frontend UI were still future work.
 
-M18 implementation note: the first create and scheduling foundation now includes `POST /api/admin/execution-groups`, Docker `commandTemplate` expansion, `SHARD` child execution creation, initial scheduling, and event-driven wave scheduling after terminal child reports. M18 supports only `mergeMode = NONE`; merge/reduce, manual reconcile, background scheduling, group cancellation, Agent changes, Docker executor changes, and frontend UI remain future work.
+M18 implementation note: the first create and scheduling foundation added `POST /api/admin/execution-groups`, Docker `commandTemplate` expansion, `SHARD` child execution creation, initial scheduling, and event-driven wave scheduling after terminal child reports. M18 supported only `mergeMode = NONE`; at the end of M18, merge/reduce, manual reconcile, background scheduling, group cancellation, Agent changes, Docker executor changes, and frontend UI were still future work.
 
-M19 implementation note: `mergeMode = AGENT` now creates one normal Docker `MERGE` child execution after shard policy allows merge. Master prepares a derived read-only workspace package containing the base merge workspace, successful shard output artifacts, and `/workspace/inputs/manifest.json`. The Agent remains unchanged and unaware of sharding; `mergeMode = MASTER`, manual reconcile, background scheduling, group cancellation, Agent changes, Docker executor changes, and frontend UI remain future work.
+M19 implementation note: `mergeMode = AGENT` added one normal Docker `MERGE` child execution after shard policy allows merge. Master prepares a derived read-only workspace package containing the base merge workspace, successful shard output artifacts, and `/workspace/inputs/manifest.json`. The Agent remained unchanged and unaware of sharding; at the end of M19, `mergeMode = MASTER`, manual reconcile, background scheduling, group cancellation, Agent changes, Docker executor changes, and frontend UI were still future work.
+
+M20 implementation note: admin group cancel and manual one-shot reconcile now exist. Group cancel marks queued and assigned child executions as `CANCELLED`, leaves claimed and running child executions to finish normally, uses `CANCELLING` while active children remain, and finalizes to `CANCELLED` when active children report terminal status. Manual reconcile can schedule eligible queued shards, create or schedule an `AGENT` merge when ready, and safely no-op for cancelling or terminal groups. M20 does not add a background scheduler, Docker kill, Agent interrupt, worker protocol changes, Docker executor changes, migrations, or frontend UI.
 
 ## Context
 
@@ -231,7 +233,7 @@ Scheduling should run:
 
 - when an `ExecutionGroup` is created,
 - after a child execution reaches a terminal state,
-- optionally through an admin/manual reconcile endpoint later.
+- through an admin/manual reconcile endpoint.
 
 Scheduling purpose:
 
@@ -242,7 +244,7 @@ Scheduling purpose:
 
 No background scheduler is required in the first implementation unless later decided.
 
-Possible future endpoint:
+Manual reconcile endpoint:
 
 ```http
 POST /api/admin/execution-groups/{executionGroupId}/reconcile
@@ -272,9 +274,9 @@ For group scheduling, each assignment should account for workers already selecte
 - No Docker kill is performed.
 - No Agent interrupt is sent.
 - Group may enter `CANCELLING` until active children finish.
-- Final group status may become `CANCELLED`, `PARTIALLY_FAILED`, or another terminal state depending on child results and policy.
+- M20 V1 makes cancellation win over normal success or partial status derivation; once no active child remains, the final group status becomes `CANCELLED`.
 
-Full group cancellation implementation is future work.
+Future Agent-side cooperative cancellation requires a separate worker protocol design.
 
 ### Decision 11 - API Direction
 
@@ -287,13 +289,13 @@ POST /api/admin/execution-groups
 GET  /api/admin/execution-groups
 GET  /api/admin/execution-groups/{executionGroupId}
 GET  /api/admin/execution-groups/{executionGroupId}/executions
+POST /api/admin/execution-groups/{executionGroupId}/cancel
+POST /api/admin/execution-groups/{executionGroupId}/reconcile
 ```
 
 Future admin endpoints:
 
 ```http
-POST /api/admin/execution-groups/{executionGroupId}/cancel
-POST /api/admin/execution-groups/{executionGroupId}/reconcile
 GET  /api/admin/execution-groups/{executionGroupId}/artifacts
 ```
 
@@ -384,16 +386,16 @@ The substitution layer should operate on list elements and must not concatenate 
 
 ## Scheduling / Reconciliation
 
-The first scheduling foundation can be event-driven:
+The first scheduling foundation is event-driven:
 
 1. Group creation creates N queued child executions.
 2. Initial scheduling assigns as many child executions as eligible workers allow.
 3. When a child reaches terminal state, reconciliation assigns more queued children if capacity exists.
-4. Optional manual reconcile can repair missed scheduling events in a future milestone.
+4. Manual reconcile can repair missed scheduling events or schedule work after workers become eligible.
 
 The scheduler should preserve one active execution per worker and should use the same worker eligibility semantics as M13.
 
-M18 implements steps 1-3 without a background daemon or manual reconcile endpoint. A background scheduler may be added later if event-driven scheduling is not enough.
+M18 implements steps 1-3. M20 adds manual reconcile without a background daemon. A background scheduler may be added later if event-driven scheduling plus manual reconcile is not enough.
 
 ## Merge / Reduce Model
 
@@ -459,7 +461,8 @@ When group cancel is requested:
 - claimed/running children continue until terminal report,
 - no Docker kill occurs,
 - no Agent interrupt occurs,
-- group remains `CANCELLING` until policy can derive a terminal group status.
+- group remains `CANCELLING` while active children remain,
+- group becomes `CANCELLED` when no active children remain.
 
 Future Agent-side cooperative cancellation requires a separate worker protocol design.
 
@@ -522,12 +525,11 @@ The Agent remains compatible because every shard is still a normal claimed `Work
 ## Current Limitations
 
 - Sharded creation currently supports Docker workload shards only.
-- Scheduling currently runs only on group creation and after terminal child reports.
-- No manual reconcile endpoint exists yet.
+- Scheduling currently runs on group creation, after terminal child reports, and through manual reconcile.
 - No background scheduler exists yet.
 - `mergeMode = MASTER` does not exist yet.
-- Manual reconcile for queued merge executions does not exist yet.
-- No group cancel endpoint exists yet.
+- Manual reconcile is one-shot and admin-triggered.
+- Group cancel does not kill Docker containers or interrupt Agents.
 - No Agent changes exist or are required for the current shard model.
 - No frontend UI exists.
 - No GPU support is introduced.
@@ -552,9 +554,9 @@ The Agent remains compatible because every shard is still a normal claimed `Work
 - Should `ExecutionGroup` store requested configuration snapshot, resolved child template, or both?
 - Should `mergeMode = MASTER` be implemented for controlled data formats?
 - Should derived merge workspaces support larger artifact sets than the current workspace package limits?
-- Should group cancellation use `FAIL_FAST` and `ALLOW_PARTIAL` policies, or a separate cancellation policy?
+- Should future cooperative cancellation add a separate cancellation policy beyond M20 V1's `CANCELLED` final state?
 - How should group-level progress be counted when merge execution exists?
-- Is manual reconcile enough for V1, or is a lightweight background scheduler required?
+- Is manual reconcile enough operationally, or is a lightweight background scheduler required?
 - Should group diagnostics be an extension of M13.1 or a separate endpoint?
 
 ## Implementation Plan
