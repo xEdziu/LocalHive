@@ -1,6 +1,6 @@
 # Admin Execution Groups API
 
-M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile. M21 adds a derived observability summary to the group detail response and deterministic child execution ordering. M22 adds read-only group output artifact discovery and a lightweight group artifact summary.
+M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile. M21 adds a derived observability summary to the group detail response and deterministic child execution ordering. M22 adds read-only group output artifact discovery and a lightweight group artifact summary. M23 adds explicit lifecycle action metadata to the group detail response.
 
 An `ExecutionGroup` is group-level metadata for sharding. Child work remains ordinary `WorkExecution` records with nullable group metadata. Master creates `SHARD` children, expands a controlled Docker command template for each shard, assigns as many shards as currently eligible workers allow, and schedules later waves when child executions report terminal status. With `mergeMode = AGENT`, Master later creates one `MERGE` child execution after shard policy allows merge.
 
@@ -426,6 +426,26 @@ Response shape:
       "nonTerminal": 0
     }
   },
+  "lifecycleActions": {
+    "cancel": {
+      "available": true,
+      "reasonCode": null,
+      "reasonMessage": "Group can be cancelled.",
+      "method": "POST",
+      "path": "/api/admin/execution-groups/{executionGroupId}/cancel",
+      "requiresBody": false,
+      "reasonSupported": true
+    },
+    "reconcile": {
+      "available": true,
+      "reasonCode": null,
+      "reasonMessage": "Group can be reconciled.",
+      "method": "POST",
+      "path": "/api/admin/execution-groups/{executionGroupId}/reconcile",
+      "requiresBody": false,
+      "reasonSupported": false
+    }
+  },
   "artifactSummary": {
     "totalArtifacts": 0,
     "shardArtifacts": 0,
@@ -457,6 +477,27 @@ Observability fields:
 `shards` and `merge` expose per-status counts for `QUEUED`, `ASSIGNED`, `CLAIMED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, and `EXPIRED`, plus `total`, `terminal`, and `nonTerminal`. `merge.exists` is `false` and `merge.executionId`, `merge.status`, `merge.workerId`, and `merge.workerHostname` are `null` when no `MERGE` child exists. This is expected for `mergeMode = NONE`, for cancelled groups that never reached merge creation, and for `AGENT` merge groups whose shard policy has not allowed merge yet.
 
 If more than one `MERGE` child exists because of a historical data issue, the response remains safe: merge counts cover all `MERGE` children, while `executionId`, `status`, `workerId`, and `workerHostname` use the earliest merge child by `createdAt`, then execution id.
+
+`lifecycleActions` is a derived admin read model for clients that need stable action availability and user-facing unavailable reasons. It does not change cancel or reconcile behavior:
+
+| Field | Description |
+| --- | --- |
+| `cancel.available` | `true` for `CREATED`, `SCHEDULING`, `RUNNING`, `MERGING`, and `CANCELLING`; `false` for terminal group statuses. |
+| `cancel.reasonCode` | `null` when available; otherwise one of `GROUP_TERMINAL`, `GROUP_ALREADY_CANCELLED`, or `GROUP_EXPIRED`. |
+| `cancel.reasonMessage` | Safe explanatory text for the current status. |
+| `cancel.method` | Always `POST`. |
+| `cancel.path` | `/api/admin/execution-groups/{executionGroupId}/cancel`. |
+| `cancel.requiresBody` | `false`; an absent body and blank `reason` both use the default admin cancellation reason. |
+| `cancel.reasonSupported` | `true`; a nonblank `reason` is accepted and trimmed, up to 500 characters. |
+| `reconcile.available` | Mirrors `observability.canReconcile` and uses the same actionable statuses as cancel. |
+| `reconcile.reasonCode` | `null` when available; otherwise one of `GROUP_TERMINAL`, `GROUP_ALREADY_CANCELLED`, or `GROUP_EXPIRED`. |
+| `reconcile.reasonMessage` | Safe explanatory text for the current status. |
+| `reconcile.method` | Always `POST`. |
+| `reconcile.path` | `/api/admin/execution-groups/{executionGroupId}/reconcile`. |
+| `reconcile.requiresBody` | `false`; reconcile does not use a request body. |
+| `reconcile.reasonSupported` | `false`; reconcile has no admin reason field. |
+
+`lifecycleActions.cancel.available` is consistent with `observability.canCancel`. `lifecycleActions.reconcile.available` is consistent with `observability.canReconcile`.
 
 `artifactSummary` is a lightweight derived summary. It does not list artifact metadata in the group detail response:
 
@@ -644,7 +685,7 @@ The worker claim/report protocol is unchanged.
 
 ## Current Limitations
 
-M22 does not implement:
+M23 does not implement:
 
 - `mergeMode = MASTER`,
 - background scheduler,

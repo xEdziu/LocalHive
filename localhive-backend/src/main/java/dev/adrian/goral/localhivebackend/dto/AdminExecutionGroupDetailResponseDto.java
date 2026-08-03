@@ -22,6 +22,7 @@ public record AdminExecutionGroupDetailResponseDto(
         String failureCode,
         String failureMessage,
         ObservabilityResponseDto observability,
+        LifecycleActionsResponseDto lifecycleActions,
         AdminExecutionGroupArtifactSummaryResponseDto artifactSummary
 ) {
 
@@ -73,6 +74,23 @@ public record AdminExecutionGroupDetailResponseDto(
             long expired,
             long terminal,
             long nonTerminal
+    ) {
+    }
+
+    public record LifecycleActionsResponseDto(
+            LifecycleActionResponseDto cancel,
+            LifecycleActionResponseDto reconcile
+    ) {
+    }
+
+    public record LifecycleActionResponseDto(
+            boolean available,
+            String reasonCode,
+            String reasonMessage,
+            String method,
+            String path,
+            boolean requiresBody,
+            boolean reasonSupported
     ) {
     }
 }

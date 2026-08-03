@@ -98,6 +98,13 @@ public class AdminExecutionGroupQueryService {
     private static final String OUTPUT_SOURCE_MERGE = "MERGE";
     private static final String OUTPUT_SOURCE_SHARDS = "SHARDS";
     private static final String OUTPUT_SOURCE_NONE = "NONE";
+    private static final String LIFECYCLE_ACTION_METHOD = "POST";
+    private static final String CANCEL_GROUP_ACTION_PATH = "/api/admin/execution-groups/{executionGroupId}/cancel";
+    private static final String RECONCILE_GROUP_ACTION_PATH =
+            "/api/admin/execution-groups/{executionGroupId}/reconcile";
+    private static final String GROUP_TERMINAL_REASON_CODE = "GROUP_TERMINAL";
+    private static final String GROUP_ALREADY_CANCELLED_REASON_CODE = "GROUP_ALREADY_CANCELLED";
+    private static final String GROUP_EXPIRED_REASON_CODE = "GROUP_EXPIRED";
     private static final Comparator<ExecutionArtifact> ARTIFACT_COMPARATOR = Comparator
             .comparing(ExecutionArtifact::getRelativePath)
             .thenComparing(ExecutionArtifact::getCreatedAt)
@@ -313,6 +320,7 @@ public class AdminExecutionGroupQueryService {
                 safeText(group.getFailureCode()),
                 safeFailureMessage(group.getFailureMessage()),
                 toObservability(group, children, assignments),
+                toLifecycleActions(group),
                 artifactSummary
         );
     }
@@ -572,11 +580,87 @@ public class AdminExecutionGroupQueryService {
                 group.getStatus() == ExecutionGroupStatus.CANCELLING,
                 countStatuses(countsByStatus(children), ACTIVE_CHILD_OBSERVABILITY_STATUSES) > 0,
                 countStatus(children, WorkExecutionStatus.QUEUED) > 0,
-                ACTIONABLE_GROUP_STATUSES.contains(group.getStatus()),
-                ACTIONABLE_GROUP_STATUSES.contains(group.getStatus()),
+                isLifecycleActionAvailable(group.getStatus()),
+                isLifecycleActionAvailable(group.getStatus()),
                 toChildRoleCounts(shardCounts),
                 toMergeObservability(mergeExecutions, representativeMerge, representativeAssignment, mergeCounts)
         );
+    }
+
+    private static AdminExecutionGroupDetailResponseDto.LifecycleActionsResponseDto toLifecycleActions(
+            ExecutionGroup group
+    ) {
+        ExecutionGroupStatus status = group.getStatus();
+        boolean available = isLifecycleActionAvailable(status);
+        return new AdminExecutionGroupDetailResponseDto.LifecycleActionsResponseDto(
+                toLifecycleAction(
+                        available,
+                        unavailableCancelReasonCode(status),
+                        available ? "Group can be cancelled." : unavailableCancelReasonMessage(status),
+                        CANCEL_GROUP_ACTION_PATH,
+                        true
+                ),
+                toLifecycleAction(
+                        available,
+                        unavailableReconcileReasonCode(status),
+                        available ? "Group can be reconciled." : unavailableReconcileReasonMessage(status),
+                        RECONCILE_GROUP_ACTION_PATH,
+                        false
+                )
+        );
+    }
+
+    private static AdminExecutionGroupDetailResponseDto.LifecycleActionResponseDto toLifecycleAction(
+            boolean available,
+            String reasonCode,
+            String reasonMessage,
+            String path,
+            boolean reasonSupported
+    ) {
+        return new AdminExecutionGroupDetailResponseDto.LifecycleActionResponseDto(
+                available,
+                available ? null : reasonCode,
+                reasonMessage,
+                LIFECYCLE_ACTION_METHOD,
+                path,
+                false,
+                reasonSupported
+        );
+    }
+
+    private static boolean isLifecycleActionAvailable(ExecutionGroupStatus status) {
+        return ACTIONABLE_GROUP_STATUSES.contains(status);
+    }
+
+    private static String unavailableCancelReasonCode(ExecutionGroupStatus status) {
+        return switch (status) {
+            case CANCELLED -> GROUP_ALREADY_CANCELLED_REASON_CODE;
+            case EXPIRED -> GROUP_EXPIRED_REASON_CODE;
+            case SUCCEEDED, FAILED, PARTIALLY_FAILED -> GROUP_TERMINAL_REASON_CODE;
+            default -> null;
+        };
+    }
+
+    private static String unavailableReconcileReasonCode(ExecutionGroupStatus status) {
+        return unavailableCancelReasonCode(status);
+    }
+
+    private static String unavailableCancelReasonMessage(ExecutionGroupStatus status) {
+        return switch (status) {
+            case CANCELLED -> "Cancelled groups cannot be cancelled again.";
+            case EXPIRED -> "Expired groups cannot be cancelled.";
+            case SUCCEEDED, FAILED, PARTIALLY_FAILED -> "Terminal groups cannot be cancelled.";
+            default -> null;
+        };
+    }
+
+    private static String unavailableReconcileReasonMessage(ExecutionGroupStatus status) {
+        return switch (status) {
+            case CANCELLED -> "Cancelled groups do not need reconciliation.";
+            case EXPIRED -> "Expired groups do not need reconciliation.";
+            case SUCCEEDED, FAILED, PARTIALLY_FAILED -> "Terminal groups do not need reconciliation.";
+            default -> null;
+        };
     }
 
     private static AdminExecutionGroupDetailResponseDto.MergeObservabilityResponseDto toMergeObservability(

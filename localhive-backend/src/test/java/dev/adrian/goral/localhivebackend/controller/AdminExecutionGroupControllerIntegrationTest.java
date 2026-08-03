@@ -484,6 +484,22 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(jsonPath("$.observability.hasQueuedChildren").value(false))
                 .andExpect(jsonPath("$.observability.canCancel").value(true))
                 .andExpect(jsonPath("$.observability.canReconcile").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.available").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.reasonCode").value(nullValue()))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.reasonMessage").value("Group can be cancelled."))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.method").value("POST"))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.path")
+                        .value("/api/admin/execution-groups/{executionGroupId}/cancel"))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.requiresBody").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.reasonSupported").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.available").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.reasonCode").value(nullValue()))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.reasonMessage").value("Group can be reconciled."))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.method").value("POST"))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.path")
+                        .value("/api/admin/execution-groups/{executionGroupId}/reconcile"))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.requiresBody").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.reasonSupported").value(false))
                 .andExpect(jsonPath("$.observability.shards.total").value(2))
                 .andExpect(jsonPath("$.observability.shards.assigned").value(1))
                 .andExpect(jsonPath("$.observability.shards.succeeded").value(1))
@@ -818,6 +834,41 @@ class AdminExecutionGroupControllerIntegrationTest {
     }
 
     @Test
+    void shouldCancelGroupWithBlankReasonAndDefaultReason() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroup("Blank reason cancel group", 1);
+        createQueuedShardExecution(group, version, 0, 1, "Blank reason shard");
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "   "
+                                }
+                                """)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.failureCode")
+                        .value(ExecutionGroupCancellationService.ADMIN_GROUP_CANCELLED_FAILURE_CODE))
+                .andExpect(jsonPath("$.failureMessage")
+                        .value(ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE))
+                .andExpect(jsonPath("$.childExecutionCounts.CANCELLED").value(1))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminResponse(response);
+        assertThat(childExecutions(group.getId())).singleElement()
+                .satisfies(child -> {
+                    assertThat(child.getStatus()).isEqualTo(WorkExecutionStatus.CANCELLED);
+                    assertThat(child.getFailureMessage())
+                            .isEqualTo(ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE);
+                });
+    }
+
+    @Test
     void shouldCancelAssignedGroupChildrenWithoutDeletingAssignments() throws Exception {
         WorkDefinitionVersion version = noOpVersion();
         ExecutionGroup group = createGroup("Assigned cancel group", 1);
@@ -906,6 +957,100 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .hasValueSatisfying(stored -> assertThat(stored.getStatus().name()).isEqualTo("SUCCEEDED"));
         assertThat(executionRepository.findById(queuedChild.getId()))
                 .hasValueSatisfying(stored -> assertThat(stored.getStatus().name()).isEqualTo("CANCELLED"));
+    }
+
+    @Test
+    void shouldKeepClaimedChildActiveAndCancelQueuedAndAssignedChildrenDuringGroupCancel() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroup("Claimed cancel group", 3);
+        WorkerCredentials claimedWorker = createApprovedWorkerCredentials("claimed-cancel");
+        Worker assignedWorker = createApprovedWorker("assigned-during-claimed-cancel");
+        WorkExecution claimedChild = createShardExecution(group, version, claimedWorker.worker(), 0, 3, "Claimed child");
+        WorkExecution assignedChild = createShardExecution(group, version, assignedWorker, 1, 3, "Assigned child");
+        WorkExecution queuedChild = createQueuedShardExecution(group, version, 2, 3, "Queued child");
+        ClaimedShard claimed = claimNext(claimedWorker);
+        assertThat(claimed.executionId()).isEqualTo(claimedChild.getId());
+        long assignmentCount = assignmentRepository.count();
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "Stop claimed group"
+                                }
+                                """)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLING"))
+                .andExpect(jsonPath("$.completedAt").value(nullValue()))
+                .andExpect(jsonPath("$.childExecutionCounts.CLAIMED").value(1))
+                .andExpect(jsonPath("$.childExecutionCounts.CANCELLED").value(2))
+                .andExpect(jsonPath("$.observability.hasActiveChildren").value(true))
+                .andExpect(jsonPath("$.observability.cancelInProgress").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.available").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.available").value(true))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminResponse(response);
+        assertThat(assignmentRepository.count()).isEqualTo(assignmentCount);
+        assertThat(mergeExecutions(group.getId())).isEmpty();
+        assertThat(executionRepository.findById(claimedChild.getId()))
+                .hasValueSatisfying(stored -> assertThat(stored.getStatus()).isEqualTo(WorkExecutionStatus.CLAIMED));
+        assertThat(executionRepository.findById(assignedChild.getId()))
+                .hasValueSatisfying(stored -> assertThat(stored.getStatus()).isEqualTo(WorkExecutionStatus.CANCELLED));
+        assertThat(executionRepository.findById(queuedChild.getId()))
+                .hasValueSatisfying(stored -> assertThat(stored.getStatus()).isEqualTo(WorkExecutionStatus.CANCELLED));
+    }
+
+    @Test
+    void shouldAcceptCancelForCancellingGroupWithoutInterruptingActiveChildOrSchedulingWork() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroup(
+                "Already cancelling group",
+                2,
+                ExecutionGroupMergeMode.AGENT,
+                ExecutionGroupFailurePolicy.FAIL_FAST
+        );
+        WorkerCredentials worker = createApprovedWorkerCredentials("already-cancelling");
+        WorkExecution claimedChild = createShardExecution(group, version, worker.worker(), 0, 2, "Claimed child");
+        WorkExecution queuedChild = createQueuedShardExecution(group, version, 1, 2, "Queued child");
+        ClaimedShard claimed = claimNext(worker);
+        assertThat(claimed.executionId()).isEqualTo(claimedChild.getId());
+        group.markCancelling(
+                ExecutionGroupCancellationService.ADMIN_GROUP_CANCELLED_FAILURE_CODE,
+                "Existing cancellation request.",
+                BASE_TIME
+        );
+        groupRepository.saveAndFlush(group);
+        long assignmentCount = assignmentRepository.count();
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLING"))
+                .andExpect(jsonPath("$.completedAt").value(nullValue()))
+                .andExpect(jsonPath("$.childExecutionCounts.CLAIMED").value(1))
+                .andExpect(jsonPath("$.childExecutionCounts.CANCELLED").value(1))
+                .andExpect(jsonPath("$.observability.cancelInProgress").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.available").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.available").value(true))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminResponse(response);
+        assertThat(assignmentRepository.count()).isEqualTo(assignmentCount);
+        assertThat(mergeExecutions(group.getId())).isEmpty();
+        assertThat(executionRepository.findById(claimedChild.getId()))
+                .hasValueSatisfying(stored -> assertThat(stored.getStatus()).isEqualTo(WorkExecutionStatus.CLAIMED));
+        assertThat(executionRepository.findById(queuedChild.getId()))
+                .hasValueSatisfying(stored -> assertThat(stored.getStatus()).isEqualTo(WorkExecutionStatus.CANCELLED));
     }
 
     @Test
@@ -1718,6 +1863,21 @@ class AdminExecutionGroupControllerIntegrationTest {
         assertTerminalObservability(succeededGroup(), "SUCCEEDED");
         assertTerminalObservability(failedGroup(), "FAILED");
         assertTerminalObservability(partiallyFailedGroup(), "PARTIALLY_FAILED");
+        assertTerminalObservability(cancelledGroup(), "CANCELLED");
+        assertTerminalObservability(expiredGroup(), "EXPIRED");
+    }
+
+    @Test
+    void shouldExposeLifecycleActionsConsistentWithObservabilityForActionableGroupStatuses() throws Exception {
+        assertActionableLifecycleActions(createGroup("Created lifecycle actions", 1), "CREATED");
+        assertActionableLifecycleActions(groupWithStatus("Scheduling lifecycle actions", ExecutionGroupStatus.SCHEDULING),
+                "SCHEDULING");
+        assertActionableLifecycleActions(groupWithStatus("Running lifecycle actions", ExecutionGroupStatus.RUNNING),
+                "RUNNING");
+        assertActionableLifecycleActions(groupWithStatus("Merging lifecycle actions", ExecutionGroupStatus.MERGING),
+                "MERGING");
+        assertActionableLifecycleActions(groupWithStatus("Cancelling lifecycle actions", ExecutionGroupStatus.CANCELLING),
+                "CANCELLING");
     }
 
     @Test
@@ -1935,6 +2095,55 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(jsonPath("$.message").value("Execution group not found."));
     }
 
+    @Test
+    void shouldFinalizeCancellingGroupWithoutActiveChildrenOnReconcileWithoutSchedulingOrMerge() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroup(
+                "Cancelling reconcile without active children",
+                1,
+                ExecutionGroupMergeMode.AGENT,
+                ExecutionGroupFailurePolicy.FAIL_FAST
+        );
+        WorkExecution cancelledChild = createQueuedShardExecution(group, version, 0, 1, "Cancelled child");
+        cancelledChild.cancelBeforeStart(
+                "ADMIN_CANCELLED",
+                ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE,
+                BASE_TIME
+        );
+        executionRepository.saveAndFlush(cancelledChild);
+        group.markCancelling(
+                ExecutionGroupCancellationService.ADMIN_GROUP_CANCELLED_FAILURE_CODE,
+                ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE,
+                BASE_TIME
+        );
+        groupRepository.saveAndFlush(group);
+        long assignmentCount = assignmentRepository.count();
+
+        String response = mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.completedAt").exists())
+                .andExpect(jsonPath("$.childExecutionCounts.CANCELLED").value(1))
+                .andExpect(jsonPath("$.observability.cancelInProgress").value(false))
+                .andExpect(jsonPath("$.observability.canCancel").value(false))
+                .andExpect(jsonPath("$.observability.canReconcile").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.available").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.reasonCode").value("GROUP_ALREADY_CANCELLED"))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.available").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.reasonCode").value("GROUP_ALREADY_CANCELLED"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeAdminResponse(response);
+        assertThat(assignmentRepository.count()).isEqualTo(assignmentCount);
+        assertThat(mergeExecutions(group.getId())).isEmpty();
+        assertThat(executionRepository.findById(cancelledChild.getId()))
+                .hasValueSatisfying(child -> assertThat(child.getStatus()).isEqualTo(WorkExecutionStatus.CANCELLED));
+    }
+
     private org.springframework.test.web.servlet.ResultActions expectBadCreate(String request) throws Exception {
         return mockMvc.perform(post("/api/admin/execution-groups")
                         .with(admin())
@@ -2035,13 +2244,99 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(jsonPath("$.observability.canCancel").value(false))
                 .andExpect(jsonPath("$.observability.canReconcile").value(false))
                 .andExpect(jsonPath("$.observability.hasActiveChildren").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.available").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.reasonCode")
+                        .value(expectedLifecycleUnavailableReasonCode(expectedStatus)))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.reasonMessage")
+                        .value(expectedCancelUnavailableReasonMessage(expectedStatus)))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.method").value("POST"))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.path")
+                        .value("/api/admin/execution-groups/{executionGroupId}/cancel"))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.requiresBody").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.reasonSupported").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.available").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.reasonCode")
+                        .value(expectedLifecycleUnavailableReasonCode(expectedStatus)))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.reasonMessage")
+                        .value(expectedReconcileUnavailableReasonMessage(expectedStatus)))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.method").value("POST"))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.path")
+                        .value("/api/admin/execution-groups/{executionGroupId}/reconcile"))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.requiresBody").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.reasonSupported").value(false))
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
         assertSafeAdminResponse(response);
     }
 
+    private void assertActionableLifecycleActions(ExecutionGroup group, String expectedStatus) throws Exception {
+        String response = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value(expectedStatus))
+                .andExpect(jsonPath("$.observability.canCancel").value(true))
+                .andExpect(jsonPath("$.observability.canReconcile").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.available").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.reasonCode").value(nullValue()))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.reasonMessage").value("Group can be cancelled."))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.method").value("POST"))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.path")
+                        .value("/api/admin/execution-groups/{executionGroupId}/cancel"))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.requiresBody").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.cancel.reasonSupported").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.available").value(true))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.reasonCode").value(nullValue()))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.reasonMessage").value("Group can be reconciled."))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.method").value("POST"))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.path")
+                        .value("/api/admin/execution-groups/{executionGroupId}/reconcile"))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.requiresBody").value(false))
+                .andExpect(jsonPath("$.lifecycleActions.reconcile.reasonSupported").value(false))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertSafeAdminResponse(response);
+    }
+
+    private static String expectedLifecycleUnavailableReasonCode(String status) {
+        return switch (status) {
+            case "CANCELLED" -> "GROUP_ALREADY_CANCELLED";
+            case "EXPIRED" -> "GROUP_EXPIRED";
+            case "SUCCEEDED", "FAILED", "PARTIALLY_FAILED" -> "GROUP_TERMINAL";
+            default -> throw new IllegalArgumentException("Unsupported terminal status: " + status);
+        };
+    }
+
+    private static String expectedCancelUnavailableReasonMessage(String status) {
+        return switch (status) {
+            case "CANCELLED" -> "Cancelled groups cannot be cancelled again.";
+            case "EXPIRED" -> "Expired groups cannot be cancelled.";
+            case "SUCCEEDED", "FAILED", "PARTIALLY_FAILED" -> "Terminal groups cannot be cancelled.";
+            default -> throw new IllegalArgumentException("Unsupported terminal status: " + status);
+        };
+    }
+
+    private static String expectedReconcileUnavailableReasonMessage(String status) {
+        return switch (status) {
+            case "CANCELLED" -> "Cancelled groups do not need reconciliation.";
+            case "EXPIRED" -> "Expired groups do not need reconciliation.";
+            case "SUCCEEDED", "FAILED", "PARTIALLY_FAILED" -> "Terminal groups do not need reconciliation.";
+            default -> throw new IllegalArgumentException("Unsupported terminal status: " + status);
+        };
+    }
+
     private void assertGroupCancelConflict(ExecutionGroup group, String statusName) throws Exception {
+        ExecutionGroup before = groupRepository.findById(group.getId()).orElseThrow();
+        String failureCode = before.getFailureCode();
+        String failureMessage = before.getFailureMessage();
+        long assignmentCount = assignmentRepository.count();
+        long artifactCount = artifactRepository.count();
+        List<WorkExecutionStatus> childStatuses = childExecutions(group.getId()).stream()
+                .map(WorkExecution::getStatus)
+                .toList();
+
         mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/cancel", group.getId())
                 .with(admin())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -2050,6 +2345,18 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message")
                         .value("Cannot cancel execution group from status " + statusName + "."));
+
+        assertThat(assignmentRepository.count()).isEqualTo(assignmentCount);
+        assertThat(artifactRepository.count()).isEqualTo(artifactCount);
+        assertThat(childExecutions(group.getId()).stream()
+                .map(WorkExecution::getStatus)
+                .toList()).isEqualTo(childStatuses);
+        assertThat(groupRepository.findById(group.getId()))
+                .hasValueSatisfying(after -> {
+                    assertThat(after.getStatus().name()).isEqualTo(statusName);
+                    assertThat(after.getFailureCode()).isEqualTo(failureCode);
+                    assertThat(after.getFailureMessage()).isEqualTo(failureMessage);
+                });
     }
 
     private ClaimedShard claimNext(WorkerCredentials worker) throws Exception {
@@ -2380,6 +2687,13 @@ class AdminExecutionGroupControllerIntegrationTest {
                 shardCount,
                 LocalDateTime.now()
         ));
+    }
+
+    private ExecutionGroup groupWithStatus(String displayName, ExecutionGroupStatus status) {
+        ExecutionGroup group = createGroup(displayName, 1);
+        ReflectionTestUtils.setField(group, "status", status);
+        ReflectionTestUtils.setField(group, "updatedAt", BASE_TIME);
+        return groupRepository.saveAndFlush(group);
     }
 
     private ExecutionGroup succeededGroup() {
