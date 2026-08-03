@@ -1,6 +1,6 @@
 # Admin Execution Groups API
 
-M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile. M21 adds a derived observability summary to the group detail response and deterministic child execution ordering.
+M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile. M21 adds a derived observability summary to the group detail response and deterministic child execution ordering. M22 adds read-only group output artifact discovery and a lightweight group artifact summary.
 
 An `ExecutionGroup` is group-level metadata for sharding. Child work remains ordinary `WorkExecution` records with nullable group metadata. Master creates `SHARD` children, expands a controlled Docker command template for each shard, assigns as many shards as currently eligible workers allow, and schedules later waves when child executions report terminal status. With `mergeMode = AGENT`, Master later creates one `MERGE` child execution after shard policy allows merge.
 
@@ -15,7 +15,7 @@ All endpoints are under `/api/admin/**`.
 - Unauthenticated requests are rejected.
 - USER role is rejected.
 
-Responses are safe admin summaries. They do not expose raw configuration snapshots, executor configuration, API keys, password hashes, lease token, lease token hash, `leaseExpiresAt`, storage paths, `dataRoot`, physical paths, artifact contents, or stack traces.
+Responses are safe admin summaries. They do not expose raw configuration snapshots, executor configuration, raw merge plans, API keys, password hashes, lease token, lease token hash, `leaseExpiresAt`, storage paths, `dataRoot`, physical paths, artifact contents, or stack traces.
 
 ## Create Execution Group
 
@@ -425,6 +425,14 @@ Response shape:
       "terminal": 0,
       "nonTerminal": 0
     }
+  },
+  "artifactSummary": {
+    "totalArtifacts": 0,
+    "shardArtifacts": 0,
+    "mergeArtifacts": 0,
+    "shardsWithArtifacts": 0,
+    "mergeHasArtifacts": false,
+    "preferredOutputSource": "NONE"
   }
 }
 ```
@@ -449,6 +457,130 @@ Observability fields:
 `shards` and `merge` expose per-status counts for `QUEUED`, `ASSIGNED`, `CLAIMED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, and `EXPIRED`, plus `total`, `terminal`, and `nonTerminal`. `merge.exists` is `false` and `merge.executionId`, `merge.status`, `merge.workerId`, and `merge.workerHostname` are `null` when no `MERGE` child exists. This is expected for `mergeMode = NONE`, for cancelled groups that never reached merge creation, and for `AGENT` merge groups whose shard policy has not allowed merge yet.
 
 If more than one `MERGE` child exists because of a historical data issue, the response remains safe: merge counts cover all `MERGE` children, while `executionId`, `status`, `workerId`, and `workerHostname` use the earliest merge child by `createdAt`, then execution id.
+
+`artifactSummary` is a lightweight derived summary. It does not list artifact metadata in the group detail response:
+
+| Field | Description |
+| --- | --- |
+| `totalArtifacts` | Number of `EXECUTION_OUTPUT` artifacts attached to child executions in the group. |
+| `shardArtifacts` | Number of artifacts attached to `SHARD` children. |
+| `mergeArtifacts` | Number of artifacts attached to `MERGE` children. |
+| `shardsWithArtifacts` | Number of unique shard indexes that have at least one artifact. |
+| `mergeHasArtifacts` | `true` when at least one `MERGE` child has at least one artifact. |
+| `preferredOutputSource` | `MERGE` when merge artifacts exist, `SHARDS` when only shard artifacts exist, otherwise `NONE`. |
+
+Use `GET /api/admin/execution-groups/{executionGroupId}/artifacts` when the client needs artifact ids and per-child artifact metadata.
+
+## Group Artifacts
+
+```http
+GET /api/admin/execution-groups/{executionGroupId}/artifacts
+```
+
+Behavior:
+
+- existing group returns a read-only discovery view for output artifacts attached to child executions,
+- missing group returns `404`,
+- no new artifacts are created,
+- existing artifact upload and download semantics are unchanged,
+- clients still download files with `GET /api/admin/artifacts/{artifactId}/download`,
+- response metadata is safe and does not include raw configuration snapshots, raw merge plans, API keys, lease data, local filesystem paths, physical storage paths, or artifact contents.
+
+Response shape:
+
+```json
+{
+  "executionGroupId": "00000000-0000-0000-0000-000000000000",
+  "displayName": "S6 Happy Path Agent Merge",
+  "status": "SUCCEEDED",
+  "mergeMode": "AGENT",
+  "failurePolicy": "FAIL_FAST",
+  "artifactSummary": {
+    "totalArtifacts": 10,
+    "shardArtifacts": 8,
+    "mergeArtifacts": 2,
+    "shardsWithArtifacts": 4,
+    "mergeHasArtifacts": true,
+    "preferredOutputSource": "MERGE"
+  },
+  "shards": [
+    {
+      "shardIndex": 0,
+      "shardCount": 4,
+      "executionId": "00000000-0000-0000-0000-000000000000",
+      "executionStatus": "SUCCEEDED",
+      "workerId": "00000000-0000-0000-0000-000000000000",
+      "workerHostname": "agent-01",
+      "artifactCount": 2,
+      "artifacts": [
+        {
+          "artifactId": "00000000-0000-0000-0000-000000000000",
+          "executionId": "00000000-0000-0000-0000-000000000000",
+          "groupRole": "SHARD",
+          "shardIndex": 0,
+          "relativePath": "result.json",
+          "originalFilename": "result.json",
+          "contentType": "application/json",
+          "sizeBytes": 123,
+          "createdAt": "2026-08-03T12:00:00"
+        }
+      ]
+    }
+  ],
+  "merge": {
+    "exists": true,
+    "mergeExecutionCount": 1,
+    "executionId": "00000000-0000-0000-0000-000000000000",
+    "executionStatus": "SUCCEEDED",
+    "workerId": "00000000-0000-0000-0000-000000000000",
+    "workerHostname": "agent-02",
+    "artifactCount": 2,
+    "artifacts": [
+      {
+        "artifactId": "00000000-0000-0000-0000-000000000000",
+        "executionId": "00000000-0000-0000-0000-000000000000",
+        "groupRole": "MERGE",
+        "shardIndex": null,
+        "relativePath": "final-result.json",
+        "originalFilename": "final-result.json",
+        "contentType": "application/json",
+        "sizeBytes": 123,
+        "createdAt": "2026-08-03T12:01:00"
+      }
+    ]
+  },
+  "preferredOutputs": [
+    {
+      "artifactId": "00000000-0000-0000-0000-000000000000",
+      "executionId": "00000000-0000-0000-0000-000000000000",
+      "groupRole": "MERGE",
+      "shardIndex": null,
+      "relativePath": "final-result.json",
+      "originalFilename": "final-result.json",
+      "contentType": "application/json",
+      "sizeBytes": 123,
+      "createdAt": "2026-08-03T12:01:00"
+    }
+  ]
+}
+```
+
+Output source rules:
+
+- `preferredOutputSource = MERGE` when at least one merge artifact exists; `preferredOutputs` contains merge artifacts.
+- `preferredOutputSource = SHARDS` when there are shard artifacts and no merge artifacts; `preferredOutputs` contains shard artifacts.
+- `preferredOutputSource = NONE` when the group has no output artifacts; `preferredOutputs` is empty.
+- `mergeMode = NONE` groups have no merge child and therefore no merge artifacts.
+- Cancelled, failed, and partially failed groups can still expose partial shard or merge artifacts that were uploaded before terminal group status.
+
+Sorting:
+
+- `shards` are sorted by `shardIndex` ascending, nulls last, then execution id,
+- artifacts inside each shard are sorted by `relativePath`, then `createdAt`, then artifact id,
+- merge artifacts are sorted by `relativePath`, then `createdAt`, then artifact id,
+- `preferredOutputs` uses the same artifact sorting as its source.
+
+If more than one `MERGE` child exists because of a historical data issue, the endpoint remains safe: `merge.artifactCount` and `merge.artifacts` cover all merge children, `merge.mergeExecutionCount` reports how many merge children exist, and representative `merge.executionId`, `merge.executionStatus`, `merge.workerId`, and `merge.workerHostname` use the earliest merge child by `createdAt`, then execution id.
 
 ## Child Executions
 
@@ -512,7 +644,7 @@ The worker claim/report protocol is unchanged.
 
 ## Current Limitations
 
-M21 does not implement:
+M22 does not implement:
 
 - `mergeMode = MASTER`,
 - background scheduler,
@@ -528,4 +660,4 @@ M21 does not implement:
 
 ## Future Extensions
 
-Future milestones may add background scheduling, Agent-side cooperative cancellation, Master-side merge for controlled formats, group artifact aggregation, selection diagnostics for groups, retry and requeue policies, and frontend views.
+Future milestones may add background scheduling, Agent-side cooperative cancellation, Master-side merge for controlled formats, richer artifact aggregation and previews, selection diagnostics for groups, retry and requeue policies, and frontend views.

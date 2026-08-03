@@ -1,15 +1,21 @@
 package dev.adrian.goral.localhivebackend.service.work;
 
+import dev.adrian.goral.localhivebackend.domain.artifact.Artifact;
+import dev.adrian.goral.localhivebackend.domain.artifact.ArtifactKind;
+import dev.adrian.goral.localhivebackend.domain.artifact.ExecutionArtifact;
 import dev.adrian.goral.localhivebackend.domain.work.ExecutionAssignment;
 import dev.adrian.goral.localhivebackend.domain.work.ExecutionGroup;
 import dev.adrian.goral.localhivebackend.domain.work.WorkExecution;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupStatus;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionGroupRole;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
+import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupArtifactSummaryResponseDto;
+import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupArtifactsResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupChildExecutionResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupDetailResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupListResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupSummaryResponseDto;
+import dev.adrian.goral.localhivebackend.repository.artifact.ExecutionArtifactRepository;
 import dev.adrian.goral.localhivebackend.repository.work.ExecutionAssignmentRepository;
 import dev.adrian.goral.localhivebackend.repository.work.ExecutionGroupRepository;
 import dev.adrian.goral.localhivebackend.repository.work.WorkExecutionRepository;
@@ -89,10 +95,24 @@ public class AdminExecutionGroupQueryService {
     private static final Pattern UNIX_ABSOLUTE_PATH = Pattern.compile(
             "(?<![\\w.-])/(?:[^\\s\"']+/)*[^\\s\"']+"
     );
+    private static final String OUTPUT_SOURCE_MERGE = "MERGE";
+    private static final String OUTPUT_SOURCE_SHARDS = "SHARDS";
+    private static final String OUTPUT_SOURCE_NONE = "NONE";
+    private static final Comparator<ExecutionArtifact> ARTIFACT_COMPARATOR = Comparator
+            .comparing(ExecutionArtifact::getRelativePath)
+            .thenComparing(ExecutionArtifact::getCreatedAt)
+            .thenComparing(executionArtifact -> executionArtifact.getArtifact().getId());
+    private static final Comparator<WorkExecution> SHARD_ARTIFACT_COMPARATOR = Comparator
+            .comparing(WorkExecution::getShardIndex, Comparator.nullsLast(Integer::compareTo))
+            .thenComparing(WorkExecution::getId);
+    private static final Comparator<WorkExecution> MERGE_REPRESENTATIVE_COMPARATOR = Comparator
+            .comparing(WorkExecution::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()))
+            .thenComparing(WorkExecution::getId);
 
     private final ExecutionGroupRepository groupRepository;
     private final WorkExecutionRepository executionRepository;
     private final ExecutionAssignmentRepository assignmentRepository;
+    private final ExecutionArtifactRepository executionArtifactRepository;
 
     @Transactional(readOnly = true)
     public AdminExecutionGroupListResponseDto listGroups(int limit, int offset, ExecutionGroupStatus status) {
@@ -129,11 +149,13 @@ public class AdminExecutionGroupQueryService {
             Map<UUID, ExecutionAssignment> assignments = assignmentsByExecutionId(children.stream()
                     .map(WorkExecution::getId)
                     .toList());
+            List<ExecutionArtifact> artifacts = outputArtifactsFor(children);
             return toDetail(
                     group,
                     countsByStatus(children),
                     children,
-                    assignments
+                    assignments,
+                    toArtifactSummary(artifacts)
             );
         });
     }
@@ -164,6 +186,24 @@ public class AdminExecutionGroupQueryService {
                         assignments.get(execution.getId())
                 ))
                 .toList());
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<AdminExecutionGroupArtifactsResponseDto> listGroupArtifacts(UUID executionGroupId) {
+        UUID validExecutionGroupId = Objects.requireNonNull(
+                executionGroupId,
+                "executionGroupId must not be null."
+        );
+        return groupRepository.findById(validExecutionGroupId).map(group -> {
+            List<WorkExecution> children = executionRepository.findAdminExecutionsByExecutionGroupId(
+                    validExecutionGroupId
+            );
+            Map<UUID, ExecutionAssignment> assignments = assignmentsByExecutionId(children.stream()
+                    .map(WorkExecution::getId)
+                    .toList());
+            List<ExecutionArtifact> artifacts = outputArtifactsFor(children);
+            return toGroupArtifacts(group, children, assignments, artifacts);
+        });
     }
 
     private static int requireValidLimit(int limit) {
@@ -213,6 +253,22 @@ public class AdminExecutionGroupQueryService {
                 ));
     }
 
+    private List<ExecutionArtifact> outputArtifactsFor(List<WorkExecution> executions) {
+        if (executions.isEmpty()) {
+            return List.of();
+        }
+
+        return executionArtifactRepository.findByExecution_IdInAndArtifact_Kind(
+                        executions.stream()
+                                .map(WorkExecution::getId)
+                                .toList(),
+                        ArtifactKind.EXECUTION_OUTPUT
+                )
+                .stream()
+                .sorted(ARTIFACT_COMPARATOR)
+                .toList();
+    }
+
     private static AdminExecutionGroupSummaryResponseDto toSummary(
             ExecutionGroup group,
             Map<WorkExecutionStatus, Long> counts
@@ -236,7 +292,8 @@ public class AdminExecutionGroupQueryService {
             ExecutionGroup group,
             Map<WorkExecutionStatus, Long> counts,
             List<WorkExecution> children,
-            Map<UUID, ExecutionAssignment> assignments
+            Map<UUID, ExecutionAssignment> assignments,
+            AdminExecutionGroupArtifactSummaryResponseDto artifactSummary
     ) {
         return new AdminExecutionGroupDetailResponseDto(
                 group.getId(),
@@ -255,7 +312,64 @@ public class AdminExecutionGroupQueryService {
                 group.getCancelledAt(),
                 safeText(group.getFailureCode()),
                 safeFailureMessage(group.getFailureMessage()),
-                toObservability(group, children, assignments)
+                toObservability(group, children, assignments),
+                artifactSummary
+        );
+    }
+
+    private static AdminExecutionGroupArtifactsResponseDto toGroupArtifacts(
+            ExecutionGroup group,
+            List<WorkExecution> children,
+            Map<UUID, ExecutionAssignment> assignments,
+            List<ExecutionArtifact> artifacts
+    ) {
+        AdminExecutionGroupArtifactSummaryResponseDto artifactSummary = toArtifactSummary(artifacts);
+        Map<UUID, List<ExecutionArtifact>> artifactsByExecutionId = artifactsByExecutionId(artifacts);
+        List<WorkExecution> shards = children.stream()
+                .filter(execution -> execution.getGroupRole() == WorkExecutionGroupRole.SHARD)
+                .sorted(SHARD_ARTIFACT_COMPARATOR)
+                .toList();
+        List<WorkExecution> mergeExecutions = children.stream()
+                .filter(execution -> execution.getGroupRole() == WorkExecutionGroupRole.MERGE)
+                .toList();
+        WorkExecution representativeMerge = mergeExecutions.stream()
+                .min(MERGE_REPRESENTATIVE_COMPARATOR)
+                .orElse(null);
+        ExecutionAssignment representativeAssignment = representativeMerge == null
+                ? null
+                : assignments.get(representativeMerge.getId());
+        List<AdminExecutionGroupArtifactsResponseDto.GroupArtifactResponseDto> shardArtifacts = artifacts.stream()
+                .filter(artifact -> artifact.getExecution().getGroupRole() == WorkExecutionGroupRole.SHARD)
+                .map(AdminExecutionGroupQueryService::toGroupArtifact)
+                .toList();
+        List<AdminExecutionGroupArtifactsResponseDto.GroupArtifactResponseDto> mergeArtifacts = artifacts.stream()
+                .filter(artifact -> artifact.getExecution().getGroupRole() == WorkExecutionGroupRole.MERGE)
+                .map(AdminExecutionGroupQueryService::toGroupArtifact)
+                .toList();
+        List<AdminExecutionGroupArtifactsResponseDto.GroupArtifactResponseDto> preferredOutputs =
+                preferredOutputs(artifactSummary, shardArtifacts, mergeArtifacts);
+
+        return new AdminExecutionGroupArtifactsResponseDto(
+                group.getId(),
+                group.getDisplayName(),
+                group.getStatus().name(),
+                group.getMergeMode().name(),
+                group.getFailurePolicy().name(),
+                artifactSummary,
+                shards.stream()
+                        .map(shard -> toShardArtifacts(
+                                shard,
+                                assignments.get(shard.getId()),
+                                artifactsByExecutionId.getOrDefault(shard.getId(), List.of())
+                        ))
+                        .toList(),
+                toMergeArtifacts(
+                        mergeExecutions,
+                        representativeMerge,
+                        representativeAssignment,
+                        mergeArtifacts
+                ),
+                preferredOutputs
         );
     }
 
@@ -276,6 +390,124 @@ public class AdminExecutionGroupQueryService {
                 executionUpdatedAt(execution),
                 execution.getCompletedAt()
         );
+    }
+
+    private static AdminExecutionGroupArtifactsResponseDto.ShardArtifactsResponseDto toShardArtifacts(
+            WorkExecution shard,
+            ExecutionAssignment assignment,
+            List<ExecutionArtifact> artifacts
+    ) {
+        List<AdminExecutionGroupArtifactsResponseDto.GroupArtifactResponseDto> artifactResponses = artifacts.stream()
+                .sorted(ARTIFACT_COMPARATOR)
+                .map(AdminExecutionGroupQueryService::toGroupArtifact)
+                .toList();
+
+        return new AdminExecutionGroupArtifactsResponseDto.ShardArtifactsResponseDto(
+                shard.getShardIndex(),
+                shard.getShardCount(),
+                shard.getId(),
+                shard.getStatus().name(),
+                assignment == null ? null : assignment.getWorker().getId(),
+                assignment == null ? null : assignment.getWorker().getHostname(),
+                artifactResponses.size(),
+                artifactResponses
+        );
+    }
+
+    private static AdminExecutionGroupArtifactsResponseDto.MergeArtifactsResponseDto toMergeArtifacts(
+            List<WorkExecution> mergeExecutions,
+            WorkExecution representativeMerge,
+            ExecutionAssignment representativeAssignment,
+            List<AdminExecutionGroupArtifactsResponseDto.GroupArtifactResponseDto> artifacts
+    ) {
+        return new AdminExecutionGroupArtifactsResponseDto.MergeArtifactsResponseDto(
+                !mergeExecutions.isEmpty(),
+                mergeExecutions.size(),
+                representativeMerge == null ? null : representativeMerge.getId(),
+                representativeMerge == null ? null : representativeMerge.getStatus().name(),
+                representativeAssignment == null ? null : representativeAssignment.getWorker().getId(),
+                representativeAssignment == null ? null : representativeAssignment.getWorker().getHostname(),
+                artifacts.size(),
+                artifacts
+        );
+    }
+
+    private static AdminExecutionGroupArtifactsResponseDto.GroupArtifactResponseDto toGroupArtifact(
+            ExecutionArtifact executionArtifact
+    ) {
+        Artifact artifact = executionArtifact.getArtifact();
+        WorkExecution execution = executionArtifact.getExecution();
+        return new AdminExecutionGroupArtifactsResponseDto.GroupArtifactResponseDto(
+                artifact.getId(),
+                execution.getId(),
+                execution.getGroupRole() == null ? null : execution.getGroupRole().name(),
+                execution.getShardIndex(),
+                executionArtifact.getRelativePath(),
+                artifact.getOriginalFilename(),
+                artifact.getContentType(),
+                artifact.getSizeBytes(),
+                artifact.getCreatedAt()
+        );
+    }
+
+    private static AdminExecutionGroupArtifactSummaryResponseDto toArtifactSummary(
+            List<ExecutionArtifact> artifacts
+    ) {
+        long shardArtifacts = artifacts.stream()
+                .filter(artifact -> artifact.getExecution().getGroupRole() == WorkExecutionGroupRole.SHARD)
+                .count();
+        long mergeArtifacts = artifacts.stream()
+                .filter(artifact -> artifact.getExecution().getGroupRole() == WorkExecutionGroupRole.MERGE)
+                .count();
+        long shardsWithArtifacts = artifacts.stream()
+                .filter(artifact -> artifact.getExecution().getGroupRole() == WorkExecutionGroupRole.SHARD)
+                .map(artifact -> artifact.getExecution().getShardIndex())
+                .filter(Objects::nonNull)
+                .distinct()
+                .count();
+
+        return new AdminExecutionGroupArtifactSummaryResponseDto(
+                artifacts.size(),
+                shardArtifacts,
+                mergeArtifacts,
+                shardsWithArtifacts,
+                mergeArtifacts > 0,
+                preferredOutputSource(shardArtifacts, mergeArtifacts)
+        );
+    }
+
+    private static Map<UUID, List<ExecutionArtifact>> artifactsByExecutionId(List<ExecutionArtifact> artifacts) {
+        return artifacts.stream()
+                .collect(Collectors.groupingBy(
+                        artifact -> artifact.getExecution().getId(),
+                        Collectors.toList()
+                ));
+    }
+
+    private static List<AdminExecutionGroupArtifactsResponseDto.GroupArtifactResponseDto> preferredOutputs(
+            AdminExecutionGroupArtifactSummaryResponseDto artifactSummary,
+            List<AdminExecutionGroupArtifactsResponseDto.GroupArtifactResponseDto> shardArtifacts,
+            List<AdminExecutionGroupArtifactsResponseDto.GroupArtifactResponseDto> mergeArtifacts
+    ) {
+        if (OUTPUT_SOURCE_MERGE.equals(artifactSummary.preferredOutputSource())) {
+            return mergeArtifacts;
+        }
+        if (OUTPUT_SOURCE_SHARDS.equals(artifactSummary.preferredOutputSource())) {
+            return shardArtifacts;
+        }
+
+        return List.of();
+    }
+
+    private static String preferredOutputSource(long shardArtifacts, long mergeArtifacts) {
+        if (mergeArtifacts > 0) {
+            return OUTPUT_SOURCE_MERGE;
+        }
+        if (shardArtifacts > 0) {
+            return OUTPUT_SOURCE_SHARDS;
+        }
+
+        return OUTPUT_SOURCE_NONE;
     }
 
     private static long totalExecutions(Map<WorkExecutionStatus, Long> counts) {

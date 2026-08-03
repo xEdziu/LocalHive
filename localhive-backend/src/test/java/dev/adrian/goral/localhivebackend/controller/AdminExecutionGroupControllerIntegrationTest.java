@@ -7,6 +7,8 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jayway.jsonpath.JsonPath;
 import dev.adrian.goral.localhivebackend.domain.artifact.Artifact;
+import dev.adrian.goral.localhivebackend.domain.artifact.ArtifactKind;
+import dev.adrian.goral.localhivebackend.domain.artifact.ExecutionArtifact;
 import dev.adrian.goral.localhivebackend.domain.User;
 import dev.adrian.goral.localhivebackend.domain.Worker;
 import dev.adrian.goral.localhivebackend.domain.WorkerCapabilities;
@@ -224,6 +226,11 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("Authentication failed."));
 
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/artifacts", group.getId())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
         mockMvc.perform(post("/api/admin/execution-groups")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(createRequest)
@@ -256,6 +263,12 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(jsonPath("$.message").value("Authentication failed."));
 
         mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/executions", group.getId())
+                        .header(API_KEY_HEADER, credentials.rawApiKey())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/artifacts", group.getId())
                         .header(API_KEY_HEADER, credentials.rawApiKey())
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isUnauthorized())
@@ -296,6 +309,12 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(jsonPath("$.message").value("Access denied."));
 
         mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/executions", group.getId())
+                        .with(user("operator").roles("USER"))
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("Access denied."));
+
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/artifacts", group.getId())
                         .with(user("operator").roles("USER"))
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isForbidden())
@@ -334,6 +353,11 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isOk());
 
         mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/executions", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/artifacts", group.getId())
                         .with(admin())
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk());
@@ -471,6 +495,12 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(jsonPath("$.observability.merge.workerId").value(nullValue()))
                 .andExpect(jsonPath("$.observability.merge.workerHostname").value(nullValue()))
                 .andExpect(jsonPath("$.observability.merge.total").value(0))
+                .andExpect(jsonPath("$.artifactSummary.totalArtifacts").value(0))
+                .andExpect(jsonPath("$.artifactSummary.shardArtifacts").value(0))
+                .andExpect(jsonPath("$.artifactSummary.mergeArtifacts").value(0))
+                .andExpect(jsonPath("$.artifactSummary.shardsWithArtifacts").value(0))
+                .andExpect(jsonPath("$.artifactSummary.mergeHasArtifacts").value(false))
+                .andExpect(jsonPath("$.artifactSummary.preferredOutputSource").value("NONE"))
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
@@ -547,6 +577,205 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .getContentAsString();
 
         assertSafeAdminResponse(adminExecutionDetailResponse);
+    }
+
+    @Test
+    void shouldListShardOnlyGroupArtifactsWithPreferredShardOutputsAndDeterministicSorting() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroup("Shard artifact group", 2);
+        Worker shardOneWorker = createApprovedWorker("artifact-shard-one");
+        Worker shardZeroWorker = createApprovedWorker("artifact-shard-zero");
+        WorkExecution shardOne = createShardExecution(group, version, shardOneWorker, 1, 2, "Shard one");
+        WorkExecution shardZero = createShardExecution(group, version, shardZeroWorker, 0, 2, "Shard zero");
+        ExecutionArtifact zeta = createOutputArtifact(
+                shardOne,
+                shardOneWorker,
+                "zeta.json",
+                "zeta.json",
+                BASE_TIME.plusSeconds(4)
+        );
+        ExecutionArtifact beta = createOutputArtifact(
+                shardZero,
+                shardZeroWorker,
+                "beta.json",
+                "beta.json",
+                BASE_TIME.plusSeconds(3)
+        );
+        ExecutionArtifact alpha = createOutputArtifact(
+                shardZero,
+                shardZeroWorker,
+                "alpha.json",
+                "alpha.json",
+                BASE_TIME.plusSeconds(5)
+        );
+
+        String response = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/artifacts", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.executionGroupId").value(group.getId().toString()))
+                .andExpect(jsonPath("$.displayName").value("Shard artifact group"))
+                .andExpect(jsonPath("$.status").value("CREATED"))
+                .andExpect(jsonPath("$.mergeMode").value("NONE"))
+                .andExpect(jsonPath("$.artifactSummary.totalArtifacts").value(3))
+                .andExpect(jsonPath("$.artifactSummary.shardArtifacts").value(3))
+                .andExpect(jsonPath("$.artifactSummary.mergeArtifacts").value(0))
+                .andExpect(jsonPath("$.artifactSummary.shardsWithArtifacts").value(2))
+                .andExpect(jsonPath("$.artifactSummary.mergeHasArtifacts").value(false))
+                .andExpect(jsonPath("$.artifactSummary.preferredOutputSource").value("SHARDS"))
+                .andExpect(jsonPath("$.shards", hasSize(2)))
+                .andExpect(jsonPath("$.shards[0].shardIndex").value(0))
+                .andExpect(jsonPath("$.shards[0].executionId").value(shardZero.getId().toString()))
+                .andExpect(jsonPath("$.shards[0].workerId").value(shardZeroWorker.getId().toString()))
+                .andExpect(jsonPath("$.shards[0].artifactCount").value(2))
+                .andExpect(jsonPath("$.shards[0].artifacts[0].artifactId").value(alpha.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.shards[0].artifacts[0].groupRole").value("SHARD"))
+                .andExpect(jsonPath("$.shards[0].artifacts[0].relativePath").value("alpha.json"))
+                .andExpect(jsonPath("$.shards[0].artifacts[1].artifactId").value(beta.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.shards[0].artifacts[1].relativePath").value("beta.json"))
+                .andExpect(jsonPath("$.shards[1].shardIndex").value(1))
+                .andExpect(jsonPath("$.shards[1].executionId").value(shardOne.getId().toString()))
+                .andExpect(jsonPath("$.shards[1].artifactCount").value(1))
+                .andExpect(jsonPath("$.merge.exists").value(false))
+                .andExpect(jsonPath("$.merge.mergeExecutionCount").value(0))
+                .andExpect(jsonPath("$.merge.artifactCount").value(0))
+                .andExpect(jsonPath("$.preferredOutputs", hasSize(3)))
+                .andExpect(jsonPath("$.preferredOutputs[0].artifactId").value(alpha.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.preferredOutputs[0].relativePath").value("alpha.json"))
+                .andExpect(jsonPath("$.preferredOutputs[1].artifactId").value(beta.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.preferredOutputs[1].relativePath").value("beta.json"))
+                .andExpect(jsonPath("$.preferredOutputs[2].artifactId").value(zeta.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.preferredOutputs[2].relativePath").value("zeta.json"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeGroupArtifactResponse(response);
+    }
+
+    @Test
+    void shouldListAgentMergeGroupArtifactsWithPreferredMergeOutputs() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroup(
+                "Agent merge artifact group",
+                2,
+                ExecutionGroupMergeMode.AGENT,
+                ExecutionGroupFailurePolicy.FAIL_FAST
+        );
+        Worker shardZeroWorker = createApprovedWorker("artifact-agent-shard-zero");
+        Worker shardOneWorker = createApprovedWorker("artifact-agent-shard-one");
+        Worker mergeWorker = createApprovedWorker("artifact-agent-merge");
+        WorkExecution shardZero = createShardExecution(group, version, shardZeroWorker, 0, 2, "Shard zero");
+        WorkExecution shardOne = createShardExecution(group, version, shardOneWorker, 1, 2, "Shard one");
+        WorkExecution merge = createQueuedMergeExecution(group, version, 2, "Merge child");
+        assignmentService.assignExecution(
+                merge.getId(),
+                mergeWorker.getId(),
+                ExecutionAssignmentMode.REQUIRE,
+                BASE_TIME.plusSeconds(10)
+        );
+        createOutputArtifact(shardZero, shardZeroWorker, "shard-zero.json", "shard-zero.json", BASE_TIME.plusSeconds(2));
+        createOutputArtifact(shardOne, shardOneWorker, "shard-one.json", "shard-one.json", BASE_TIME.plusSeconds(3));
+        ExecutionArtifact finalResult = createOutputArtifact(
+                merge,
+                mergeWorker,
+                "final-result.json",
+                "final-result.json",
+                BASE_TIME.plusSeconds(11)
+        );
+        ExecutionArtifact finalSummary = createOutputArtifact(
+                merge,
+                mergeWorker,
+                "summary/final.txt",
+                "final.txt",
+                BASE_TIME.plusSeconds(12)
+        );
+
+        String response = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/artifacts", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mergeMode").value("AGENT"))
+                .andExpect(jsonPath("$.artifactSummary.totalArtifacts").value(4))
+                .andExpect(jsonPath("$.artifactSummary.shardArtifacts").value(2))
+                .andExpect(jsonPath("$.artifactSummary.mergeArtifacts").value(2))
+                .andExpect(jsonPath("$.artifactSummary.shardsWithArtifacts").value(2))
+                .andExpect(jsonPath("$.artifactSummary.mergeHasArtifacts").value(true))
+                .andExpect(jsonPath("$.artifactSummary.preferredOutputSource").value("MERGE"))
+                .andExpect(jsonPath("$.shards", hasSize(2)))
+                .andExpect(jsonPath("$.merge.exists").value(true))
+                .andExpect(jsonPath("$.merge.mergeExecutionCount").value(1))
+                .andExpect(jsonPath("$.merge.executionId").value(merge.getId().toString()))
+                .andExpect(jsonPath("$.merge.executionStatus").value("ASSIGNED"))
+                .andExpect(jsonPath("$.merge.workerId").value(mergeWorker.getId().toString()))
+                .andExpect(jsonPath("$.merge.artifactCount").value(2))
+                .andExpect(jsonPath("$.merge.artifacts[0].artifactId").value(finalResult.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.merge.artifacts[0].groupRole").value("MERGE"))
+                .andExpect(jsonPath("$.merge.artifacts[0].shardIndex").value(nullValue()))
+                .andExpect(jsonPath("$.merge.artifacts[0].relativePath").value("final-result.json"))
+                .andExpect(jsonPath("$.merge.artifacts[1].artifactId").value(finalSummary.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.merge.artifacts[1].relativePath").value("summary/final.txt"))
+                .andExpect(jsonPath("$.preferredOutputs", hasSize(2)))
+                .andExpect(jsonPath("$.preferredOutputs[0].artifactId").value(finalResult.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.preferredOutputs[0].groupRole").value("MERGE"))
+                .andExpect(jsonPath("$.preferredOutputs[1].artifactId").value(finalSummary.getArtifact().getId().toString()))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeGroupArtifactResponse(response);
+    }
+
+    @Test
+    void shouldExposePartialArtifactsForCancelledGroupWithoutCreatingMergeExpectation() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroup("Cancelled partial artifact group", 2);
+        Worker worker = createApprovedWorker("artifact-cancelled");
+        WorkExecution shardWithOutput = createShardExecution(group, version, worker, 0, 2, "Shard with output");
+        createQueuedShardExecution(group, version, 1, 2, "Cancelled shard without output");
+        ExecutionArtifact artifact = createOutputArtifact(
+                shardWithOutput,
+                worker,
+                "partial/result.json",
+                "result.json",
+                BASE_TIME.plusSeconds(7)
+        );
+        group.markCancelled(
+                ExecutionGroupCancellationService.ADMIN_GROUP_CANCELLED_FAILURE_CODE,
+                ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE,
+                BASE_TIME.plusSeconds(8)
+        );
+        groupRepository.saveAndFlush(group);
+
+        String response = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/artifacts", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.artifactSummary.totalArtifacts").value(1))
+                .andExpect(jsonPath("$.artifactSummary.shardArtifacts").value(1))
+                .andExpect(jsonPath("$.artifactSummary.mergeArtifacts").value(0))
+                .andExpect(jsonPath("$.artifactSummary.shardsWithArtifacts").value(1))
+                .andExpect(jsonPath("$.artifactSummary.mergeHasArtifacts").value(false))
+                .andExpect(jsonPath("$.artifactSummary.preferredOutputSource").value("SHARDS"))
+                .andExpect(jsonPath("$.merge.exists").value(false))
+                .andExpect(jsonPath("$.preferredOutputs", hasSize(1)))
+                .andExpect(jsonPath("$.preferredOutputs[0].artifactId").value(artifact.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.preferredOutputs[0].relativePath").value("partial/result.json"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeGroupArtifactResponse(response);
+    }
+
+    @Test
+    void shouldReturnNotFoundForUnknownExecutionGroupArtifacts() throws Exception {
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/artifacts", UUID.randomUUID())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Execution group not found."));
     }
 
     @Test
@@ -2132,10 +2361,22 @@ class AdminExecutionGroupControllerIntegrationTest {
     }
 
     private ExecutionGroup createGroup(String displayName, int shardCount) {
+        return createGroup(
+                displayName,
+                shardCount,
+                ExecutionGroupMergeMode.NONE,
+                ExecutionGroupFailurePolicy.FAIL_FAST
+        );
+    }
+
+    private ExecutionGroup createGroup(String displayName,
+                                       int shardCount,
+                                       ExecutionGroupMergeMode mergeMode,
+                                       ExecutionGroupFailurePolicy failurePolicy) {
         return groupRepository.save(ExecutionGroup.create(
                 displayName,
-                ExecutionGroupMergeMode.NONE,
-                ExecutionGroupFailurePolicy.FAIL_FAST,
+                mergeMode,
+                failurePolicy,
                 shardCount,
                 LocalDateTime.now()
         ));
@@ -2214,6 +2455,32 @@ class AdminExecutionGroupControllerIntegrationTest {
         WorkExecution execution = createOneOff(version, displayName);
         execution.attachToGroupAsMerge(group, shardCount);
         return executionRepository.saveAndFlush(execution);
+    }
+
+    private ExecutionArtifact createOutputArtifact(WorkExecution execution,
+                                                   Worker worker,
+                                                   String relativePath,
+                                                   String originalFilename,
+                                                   LocalDateTime createdAt) {
+        UUID artifactId = UUID.randomUUID();
+        Artifact artifact = artifactRepository.save(Artifact.create(
+                artifactId,
+                ArtifactKind.EXECUTION_OUTPUT,
+                originalFilename,
+                "application/json",
+                relativePath.length(),
+                "a".repeat(64),
+                artifactId + "/artifact",
+                createdAt,
+                worker.getId().toString()
+        ));
+        return executionArtifactRepository.saveAndFlush(ExecutionArtifact.create(
+                execution,
+                artifact,
+                worker,
+                relativePath,
+                createdAt
+        ));
     }
 
     private WorkExecution createOneOff(WorkDefinitionVersion version, String displayName) {
@@ -2406,6 +2673,18 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .doesNotContain("C:\\secret")
                 .doesNotContain("Exception")
                 .doesNotContain("StackTrace");
+    }
+
+    private static void assertSafeGroupArtifactResponse(String response) {
+        assertSafeAdminResponse(response);
+        assertThat(response)
+                .doesNotContain("sha256")
+                .doesNotContain("uploadedByWorkerId")
+                .doesNotContain("createdBy")
+                .doesNotContain("storage_path")
+                .doesNotContain("target/test-artifacts")
+                .doesNotContain("mergeConfigurationTemplate")
+                .doesNotContain("mergePlan");
     }
 
     private record WorkerCredentials(Worker worker, String rawApiKey) {

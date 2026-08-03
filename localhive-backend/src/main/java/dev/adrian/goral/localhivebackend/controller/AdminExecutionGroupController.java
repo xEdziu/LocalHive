@@ -4,6 +4,7 @@ import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupStatus;
 import dev.adrian.goral.localhivebackend.dto.AdminCancelExecutionRequestDto;
 import dev.adrian.goral.localhivebackend.dto.AdminCreateExecutionGroupRequestDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupChildExecutionResponseDto;
+import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupArtifactsResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupDetailResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupListResponseDto;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupControlService;
@@ -81,6 +82,15 @@ public class AdminExecutionGroupController {
             @PathVariable UUID executionGroupId
     ) {
         return queryService.listChildExecutions(executionGroupId)
+                .map(ResponseEntity::ok)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Execution group not found."));
+    }
+
+    @GetMapping("/{executionGroupId}/artifacts")
+    public ResponseEntity<AdminExecutionGroupArtifactsResponseDto> listGroupArtifacts(
+            @PathVariable UUID executionGroupId
+    ) {
+        return queryService.listGroupArtifacts(executionGroupId)
                 .map(ResponseEntity::ok)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Execution group not found."));
     }

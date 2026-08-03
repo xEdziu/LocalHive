@@ -20,6 +20,9 @@ public interface ExecutionArtifactRepository extends JpaRepository<ExecutionArti
     List<ExecutionArtifact> findByExecution_IdAndArtifact_KindOrderByCreatedAtAsc(UUID executionId, ArtifactKind kind);
 
     @EntityGraph(attributePaths = {"artifact", "execution", "uploadedByWorker"})
+    List<ExecutionArtifact> findByExecution_IdInAndArtifact_Kind(Collection<UUID> executionIds, ArtifactKind kind);
+
+    @EntityGraph(attributePaths = {"artifact", "execution", "uploadedByWorker"})
     Optional<ExecutionArtifact> findByArtifact_Id(UUID artifactId);
 
     long countByExecution_IdAndArtifact_Kind(UUID executionId, ArtifactKind kind);

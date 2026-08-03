@@ -21,7 +21,8 @@ public record AdminExecutionGroupDetailResponseDto(
         LocalDateTime cancelledAt,
         String failureCode,
         String failureMessage,
-        ObservabilityResponseDto observability
+        ObservabilityResponseDto observability,
+        AdminExecutionGroupArtifactSummaryResponseDto artifactSummary
 ) {
 
     public AdminExecutionGroupDetailResponseDto {
