@@ -627,6 +627,8 @@ GET /api/admin/execution-groups/{executionGroupId}/activity/stream
 
 M25 uses Server-Sent Events for UI-oriented live updates. The stream is one-way from Master to admin clients, works over ordinary HTTP, and is easier to inspect with curl or an HTTP client than a bidirectional protocol. WebSocket and SOAP remain planned as later research protocol adapters; they are not replacements for this admin UI stream.
 
+M26 documents REST, future WebSocket, and future SOAP as research protocol adapters in [Research Protocol Contract](research-protocol-contract.md). The SSE stream described here remains an admin UI live update endpoint, not the future WebSocket research adapter.
+
 Behavior:
 
 - existing group opens a `text/event-stream` response,
