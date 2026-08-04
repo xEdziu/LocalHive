@@ -1,6 +1,6 @@
 # Admin Execution Groups API
 
-M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile. M21 adds a derived observability summary to the group detail response and deterministic child execution ordering. M22 adds read-only group output artifact discovery and a lightweight group artifact summary. M23 adds explicit lifecycle action metadata to the group detail response.
+M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile. M21 adds a derived observability summary to the group detail response and deterministic child execution ordering. M22 adds read-only group output artifact discovery and a lightweight group artifact summary. M23 adds explicit lifecycle action metadata to the group detail response. M24 adds a derived activity feed endpoint for admin polling and future live update foundations.
 
 An `ExecutionGroup` is group-level metadata for sharding. Child work remains ordinary `WorkExecution` records with nullable group metadata. Master creates `SHARD` children, expands a controlled Docker command template for each shard, assigns as many shards as currently eligible workers allow, and schedules later waves when child executions report terminal status. With `mergeMode = AGENT`, Master later creates one `MERGE` child execution after shard policy allows merge.
 
@@ -510,7 +510,114 @@ If more than one `MERGE` child exists because of a historical data issue, the re
 | `mergeHasArtifacts` | `true` when at least one `MERGE` child has at least one artifact. |
 | `preferredOutputSource` | `MERGE` when merge artifacts exist, `SHARDS` when only shard artifacts exist, otherwise `NONE`. |
 
-Use `GET /api/admin/execution-groups/{executionGroupId}/artifacts` when the client needs artifact ids and per-child artifact metadata.
+Use `GET /api/admin/execution-groups/{executionGroupId}/activity` when the client needs a chronological timeline. Use `GET /api/admin/execution-groups/{executionGroupId}/artifacts` when the client needs artifact ids and per-child artifact metadata.
+
+## Execution Group Activity
+
+```http
+GET /api/admin/execution-groups/{executionGroupId}/activity
+```
+
+Behavior:
+
+- existing group returns a derived best-effort timeline,
+- missing group returns `404`,
+- group with no children still returns `GROUP_CREATED` and any derivable current group status event,
+- no events are persisted or created by this endpoint,
+- no scheduler, cancel, reconcile, artifact upload, or artifact download behavior is changed,
+- `mergeMode = NONE` does not fabricate `MERGE` events,
+- `mergeMode = AGENT` shows `MERGE` events only when a `MERGE` child execution exists,
+- artifact events are derived from `EXECUTION_OUTPUT` artifact links only.
+
+Response shape:
+
+```json
+{
+  "executionGroupId": "00000000-0000-0000-0000-000000000000",
+  "displayName": "S8 Artifact Discovery - AGENT Merge",
+  "status": "SUCCEEDED",
+  "mergeMode": "AGENT",
+  "failurePolicy": "FAIL_FAST",
+  "generatedAt": "2026-08-03T15:30:00",
+  "events": [
+    {
+      "type": "GROUP_CREATED",
+      "occurredAt": "2026-08-03T15:00:00",
+      "message": "Execution group was created.",
+      "executionId": null,
+      "groupRole": null,
+      "shardIndex": null,
+      "workerId": null,
+      "workerHostname": null,
+      "artifactId": null,
+      "relativePath": null,
+      "status": "CREATED"
+    },
+    {
+      "type": "SHARD_SUCCEEDED",
+      "occurredAt": "2026-08-03T15:00:12",
+      "message": "Shard 0 succeeded.",
+      "executionId": "00000000-0000-0000-0000-000000000000",
+      "groupRole": "SHARD",
+      "shardIndex": 0,
+      "workerId": "00000000-0000-0000-0000-000000000000",
+      "workerHostname": "agent-01",
+      "artifactId": null,
+      "relativePath": null,
+      "status": "SUCCEEDED"
+    },
+    {
+      "type": "ARTIFACT_UPLOADED",
+      "occurredAt": "2026-08-03T15:00:13",
+      "message": "Artifact result.json was uploaded by shard 0.",
+      "executionId": "00000000-0000-0000-0000-000000000000",
+      "groupRole": "SHARD",
+      "shardIndex": 0,
+      "workerId": "00000000-0000-0000-0000-000000000000",
+      "workerHostname": "agent-01",
+      "artifactId": "00000000-0000-0000-0000-000000000000",
+      "relativePath": "result.json",
+      "status": null
+    }
+  ]
+}
+```
+
+Event types:
+
+| Type family | Meaning |
+| --- | --- |
+| `GROUP_CREATED` | Derived from `execution_groups.created_at`. |
+| `GROUP_SCHEDULING`, `GROUP_RUNNING`, `GROUP_MERGING` | Current non-terminal group status when derivable. |
+| `GROUP_SUCCEEDED`, `GROUP_PARTIALLY_FAILED`, `GROUP_FAILED`, `GROUP_CANCELLED`, `GROUP_EXPIRED` | Terminal group status derived from `completedAt`, `cancelledAt`, `updatedAt`, or `createdAt` fallback. |
+| `GROUP_CANCELLING` | Cancellation was requested and a separate cancellation timestamp exists before final cancellation. |
+| `SHARD_CREATED`, `MERGE_CREATED` | Child execution row exists. |
+| `SHARD_ASSIGNED`, `MERGE_ASSIGNED` | Assignment exists or the child has an assignment timestamp. |
+| `SHARD_CLAIMED`, `MERGE_CLAIMED` | Child has `claimedAt`. |
+| `SHARD_RUNNING`, `MERGE_RUNNING` | Child has `startedAt`. |
+| `SHARD_SUCCEEDED`, `SHARD_FAILED`, `SHARD_CANCELLED`, `SHARD_EXPIRED` | Terminal shard status with a known terminal timestamp. |
+| `MERGE_SUCCEEDED`, `MERGE_FAILED`, `MERGE_CANCELLED`, `MERGE_EXPIRED` | Terminal merge status with a known terminal timestamp. |
+| `ARTIFACT_UPLOADED` | `EXECUTION_OUTPUT` artifact is linked to a child execution. |
+
+Sorting is deterministic:
+
+1. `occurredAt` ascending.
+2. Same-timestamp priority: group created, child created, assigned, claimed, running, shard terminal, merge terminal, artifact uploaded, group current or terminal.
+3. `SHARD` events sort before `MERGE` events.
+4. `shardIndex` ascending with nulls last.
+5. `executionId` ascending.
+6. artifact `relativePath` ascending.
+7. `artifactId` ascending.
+
+Safety:
+
+- response fields are limited to group metadata and event-safe identifiers, timestamps, labels, statuses, worker id/hostname, artifact id, and artifact relative path,
+- raw execution configuration snapshots are not exposed,
+- raw merge plans are not exposed,
+- API keys, password hashes, lease tokens, lease hashes, and `leaseExpiresAt` are not exposed,
+- local filesystem paths, physical artifact storage paths, storage roots, artifact contents, stack traces, and internal exception details are not exposed.
+
+This endpoint is a derived read model, not a persisted audit log. It reconstructs a best-effort timeline from the current `ExecutionGroup`, child `WorkExecution`, `ExecutionAssignment`, `Artifact`, and `ExecutionArtifact` rows. If an older transition has no separate timestamp column, M24 does not invent a synthetic event for that transition.
 
 ## Group Artifacts
 
@@ -685,7 +792,7 @@ The worker claim/report protocol is unchanged.
 
 ## Current Limitations
 
-M23 does not implement:
+M24 does not implement:
 
 - `mergeMode = MASTER`,
 - background scheduler,
@@ -694,11 +801,12 @@ M23 does not implement:
 - retry or requeue policy,
 - Agent changes,
 - Docker executor changes,
-- a separate execution group event log,
+- a persistent execution group event log or audit log,
+- SSE or WebSocket streaming,
 - frontend UI,
 - GPU support,
-- WebSocket, SOAP, Minecraft lifecycle, or research telemetry.
+- SOAP, Minecraft lifecycle, or research telemetry.
 
 ## Future Extensions
 
-Future milestones may add background scheduling, Agent-side cooperative cancellation, Master-side merge for controlled formats, richer artifact aggregation and previews, selection diagnostics for groups, retry and requeue policies, and frontend views.
+Future milestones may add background scheduling, Agent-side cooperative cancellation, Master-side merge for controlled formats, richer artifact aggregation and previews, selection diagnostics for groups, retry and requeue policies, frontend views, and live activity streaming using SSE or WebSocket on top of the M24 event model.

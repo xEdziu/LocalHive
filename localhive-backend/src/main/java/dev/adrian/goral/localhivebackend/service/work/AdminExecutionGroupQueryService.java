@@ -9,6 +9,8 @@ import dev.adrian.goral.localhivebackend.domain.work.WorkExecution;
 import dev.adrian.goral.localhivebackend.domain.work.enums.ExecutionGroupStatus;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionGroupRole;
 import dev.adrian.goral.localhivebackend.domain.work.enums.WorkExecutionStatus;
+import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupActivityEventType;
+import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupActivityResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupArtifactSummaryResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupArtifactsResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupChildExecutionResponseDto;
@@ -26,6 +28,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.EnumMap;
@@ -115,6 +118,14 @@ public class AdminExecutionGroupQueryService {
     private static final Comparator<WorkExecution> MERGE_REPRESENTATIVE_COMPARATOR = Comparator
             .comparing(WorkExecution::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()))
             .thenComparing(WorkExecution::getId);
+    private static final Comparator<ActivityEvent> ACTIVITY_EVENT_COMPARATOR = Comparator
+            .comparing(ActivityEvent::occurredAt)
+            .thenComparingInt(event -> activityEventPriority(event.type()))
+            .thenComparingInt(event -> groupRoleOrder(event.groupRole()))
+            .thenComparing(ActivityEvent::shardIndex, Comparator.nullsLast(Comparator.naturalOrder()))
+            .thenComparing(ActivityEvent::executionId, Comparator.nullsLast(Comparator.naturalOrder()))
+            .thenComparing(ActivityEvent::relativePath, Comparator.nullsLast(Comparator.naturalOrder()))
+            .thenComparing(ActivityEvent::artifactId, Comparator.nullsLast(Comparator.naturalOrder()));
 
     private final ExecutionGroupRepository groupRepository;
     private final WorkExecutionRepository executionRepository;
@@ -210,6 +221,24 @@ public class AdminExecutionGroupQueryService {
                     .toList());
             List<ExecutionArtifact> artifacts = outputArtifactsFor(children);
             return toGroupArtifacts(group, children, assignments, artifacts);
+        });
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<AdminExecutionGroupActivityResponseDto> getGroupActivity(UUID executionGroupId) {
+        UUID validExecutionGroupId = Objects.requireNonNull(
+                executionGroupId,
+                "executionGroupId must not be null."
+        );
+        return groupRepository.findById(validExecutionGroupId).map(group -> {
+            List<WorkExecution> children = executionRepository.findAdminExecutionsByExecutionGroupId(
+                    validExecutionGroupId
+            );
+            Map<UUID, ExecutionAssignment> assignments = assignmentsByExecutionId(children.stream()
+                    .map(WorkExecution::getId)
+                    .toList());
+            List<ExecutionArtifact> artifacts = outputArtifactsFor(children);
+            return toActivity(group, children, assignments, artifacts, LocalDateTime.now());
         });
     }
 
@@ -456,6 +485,408 @@ public class AdminExecutionGroupQueryService {
                 artifact.getSizeBytes(),
                 artifact.getCreatedAt()
         );
+    }
+
+    private static AdminExecutionGroupActivityResponseDto toActivity(
+            ExecutionGroup group,
+            List<WorkExecution> children,
+            Map<UUID, ExecutionAssignment> assignments,
+            List<ExecutionArtifact> artifacts,
+            LocalDateTime generatedAt
+    ) {
+        List<ActivityEvent> events = new ArrayList<>();
+        addGroupEvents(events, group);
+        children.forEach(child -> addChildEvents(events, child, assignments.get(child.getId())));
+        artifacts.forEach(artifact -> addArtifactEvent(events, artifact));
+
+        List<AdminExecutionGroupActivityResponseDto.ActivityEventResponseDto> responses = events.stream()
+                .sorted(ACTIVITY_EVENT_COMPARATOR)
+                .map(ActivityEvent::toResponse)
+                .toList();
+        return new AdminExecutionGroupActivityResponseDto(
+                group.getId(),
+                group.getDisplayName(),
+                group.getStatus().name(),
+                group.getMergeMode().name(),
+                group.getFailurePolicy().name(),
+                Objects.requireNonNull(generatedAt, "generatedAt must not be null."),
+                responses
+        );
+    }
+
+    private static void addGroupEvents(List<ActivityEvent> events, ExecutionGroup group) {
+        addGroupEvent(
+                events,
+                AdminExecutionGroupActivityEventType.GROUP_CREATED,
+                group.getCreatedAt(),
+                "Execution group was created.",
+                "CREATED"
+        );
+
+        switch (group.getStatus()) {
+            case CREATED -> {
+            }
+            case SCHEDULING -> addGroupEvent(
+                    events,
+                    AdminExecutionGroupActivityEventType.GROUP_SCHEDULING,
+                    coalesceTimestamp(group.getUpdatedAt(), group.getCreatedAt()),
+                    "Execution group is scheduling.",
+                    group.getStatus().name()
+            );
+            case RUNNING -> addGroupEvent(
+                    events,
+                    AdminExecutionGroupActivityEventType.GROUP_RUNNING,
+                    coalesceTimestamp(group.getUpdatedAt(), group.getCreatedAt()),
+                    "Execution group is running.",
+                    group.getStatus().name()
+            );
+            case MERGING -> addGroupEvent(
+                    events,
+                    AdminExecutionGroupActivityEventType.GROUP_MERGING,
+                    coalesceTimestamp(group.getUpdatedAt(), group.getCreatedAt()),
+                    "Execution group is merging.",
+                    group.getStatus().name()
+            );
+            case SUCCEEDED -> addGroupEvent(
+                    events,
+                    AdminExecutionGroupActivityEventType.GROUP_SUCCEEDED,
+                    coalesceTimestamp(group.getCompletedAt(), group.getUpdatedAt(), group.getCreatedAt()),
+                    "Execution group succeeded.",
+                    group.getStatus().name()
+            );
+            case PARTIALLY_FAILED -> addGroupEvent(
+                    events,
+                    AdminExecutionGroupActivityEventType.GROUP_PARTIALLY_FAILED,
+                    coalesceTimestamp(group.getCompletedAt(), group.getUpdatedAt(), group.getCreatedAt()),
+                    "Execution group partially failed.",
+                    group.getStatus().name()
+            );
+            case FAILED -> addGroupEvent(
+                    events,
+                    AdminExecutionGroupActivityEventType.GROUP_FAILED,
+                    coalesceTimestamp(group.getCompletedAt(), group.getUpdatedAt(), group.getCreatedAt()),
+                    "Execution group failed.",
+                    group.getStatus().name()
+            );
+            case CANCELLING -> addGroupEvent(
+                    events,
+                    AdminExecutionGroupActivityEventType.GROUP_CANCELLING,
+                    coalesceTimestamp(group.getCancelledAt(), group.getUpdatedAt(), group.getCreatedAt()),
+                    "Execution group cancellation was requested.",
+                    group.getStatus().name()
+            );
+            case CANCELLED -> addCancelledGroupEvents(events, group);
+            case EXPIRED -> addGroupEvent(
+                    events,
+                    AdminExecutionGroupActivityEventType.GROUP_EXPIRED,
+                    coalesceTimestamp(group.getCompletedAt(), group.getUpdatedAt(), group.getCreatedAt()),
+                    "Execution group expired.",
+                    group.getStatus().name()
+            );
+        }
+    }
+
+    private static void addCancelledGroupEvents(List<ActivityEvent> events, ExecutionGroup group) {
+        LocalDateTime cancelledAt = group.getCancelledAt();
+        LocalDateTime completedAt = coalesceTimestamp(group.getCompletedAt(), cancelledAt, group.getUpdatedAt(), group.getCreatedAt());
+        if (cancelledAt != null && !cancelledAt.equals(completedAt)) {
+            addGroupEvent(
+                    events,
+                    AdminExecutionGroupActivityEventType.GROUP_CANCELLING,
+                    cancelledAt,
+                    "Execution group cancellation was requested.",
+                    ExecutionGroupStatus.CANCELLING.name()
+            );
+        }
+        addGroupEvent(
+                events,
+                AdminExecutionGroupActivityEventType.GROUP_CANCELLED,
+                completedAt,
+                "Execution group was cancelled.",
+                group.getStatus().name()
+        );
+    }
+
+    private static void addGroupEvent(List<ActivityEvent> events,
+                                      AdminExecutionGroupActivityEventType type,
+                                      LocalDateTime occurredAt,
+                                      String message,
+                                      String status) {
+        addEvent(
+                events,
+                type,
+                occurredAt,
+                message,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                status
+        );
+    }
+
+    private static void addChildEvents(List<ActivityEvent> events,
+                                       WorkExecution execution,
+                                       ExecutionAssignment assignment) {
+        addEvent(
+                events,
+                childEventType(execution, WorkExecutionStatus.QUEUED),
+                execution.getCreatedAt(),
+                childCreatedMessage(execution),
+                execution.getId(),
+                groupRoleName(execution),
+                execution.getShardIndex(),
+                null,
+                null,
+                null,
+                null,
+                WorkExecutionStatus.QUEUED.name()
+        );
+
+        LocalDateTime assignedAt = assignment == null
+                ? execution.getAssignedAt()
+                : coalesceTimestamp(assignment.getAssignedAt(), execution.getAssignedAt());
+        if (assignedAt != null) {
+            addEvent(
+                    events,
+                    childEventType(execution, WorkExecutionStatus.ASSIGNED),
+                    assignedAt,
+                    childWorkerMessage(execution, WorkExecutionStatus.ASSIGNED, assignment),
+                    execution.getId(),
+                    groupRoleName(execution),
+                    execution.getShardIndex(),
+                    workerId(assignment),
+                    workerHostname(assignment),
+                    null,
+                    null,
+                    WorkExecutionStatus.ASSIGNED.name()
+            );
+        }
+
+        if (execution.getClaimedAt() != null) {
+            addEvent(
+                    events,
+                    childEventType(execution, WorkExecutionStatus.CLAIMED),
+                    execution.getClaimedAt(),
+                    childWorkerMessage(execution, WorkExecutionStatus.CLAIMED, assignment),
+                    execution.getId(),
+                    groupRoleName(execution),
+                    execution.getShardIndex(),
+                    workerId(assignment),
+                    workerHostname(assignment),
+                    null,
+                    null,
+                    WorkExecutionStatus.CLAIMED.name()
+            );
+        }
+
+        if (execution.getStartedAt() != null) {
+            addEvent(
+                    events,
+                    childEventType(execution, WorkExecutionStatus.RUNNING),
+                    execution.getStartedAt(),
+                    childWorkerMessage(execution, WorkExecutionStatus.RUNNING, assignment),
+                    execution.getId(),
+                    groupRoleName(execution),
+                    execution.getShardIndex(),
+                    workerId(assignment),
+                    workerHostname(assignment),
+                    null,
+                    null,
+                    WorkExecutionStatus.RUNNING.name()
+            );
+        }
+
+        addTerminalChildEvent(events, execution, assignment);
+    }
+
+    private static void addTerminalChildEvent(List<ActivityEvent> events,
+                                              WorkExecution execution,
+                                              ExecutionAssignment assignment) {
+        WorkExecutionStatus status = execution.getStatus();
+        LocalDateTime occurredAt = switch (status) {
+            case SUCCEEDED, FAILED -> execution.getCompletedAt();
+            case CANCELLED -> coalesceTimestamp(execution.getCancelledAt(), execution.getCompletedAt());
+            case EXPIRED -> execution.getExpiredAt();
+            default -> null;
+        };
+        if (occurredAt == null) {
+            return;
+        }
+
+        addEvent(
+                events,
+                childEventType(execution, status),
+                occurredAt,
+                childTerminalMessage(execution, status),
+                execution.getId(),
+                groupRoleName(execution),
+                execution.getShardIndex(),
+                workerId(assignment),
+                workerHostname(assignment),
+                null,
+                null,
+                status.name()
+        );
+    }
+
+    private static void addArtifactEvent(List<ActivityEvent> events, ExecutionArtifact executionArtifact) {
+        Artifact artifact = executionArtifact.getArtifact();
+        WorkExecution execution = executionArtifact.getExecution();
+        String relativePath = safeFailureMessage(executionArtifact.getRelativePath());
+        var worker = executionArtifact.getUploadedByWorker();
+        addEvent(
+                events,
+                AdminExecutionGroupActivityEventType.ARTIFACT_UPLOADED,
+                coalesceTimestamp(executionArtifact.getCreatedAt(), artifact.getCreatedAt()),
+                artifactMessage(execution, relativePath),
+                execution.getId(),
+                groupRoleName(execution),
+                execution.getShardIndex(),
+                worker.getId(),
+                safeFailureMessage(worker.getHostname()),
+                artifact.getId(),
+                relativePath,
+                null
+        );
+    }
+
+    private static void addEvent(List<ActivityEvent> events,
+                                 AdminExecutionGroupActivityEventType type,
+                                 LocalDateTime occurredAt,
+                                 String message,
+                                 UUID executionId,
+                                 String groupRole,
+                                 Integer shardIndex,
+                                 UUID workerId,
+                                 String workerHostname,
+                                 UUID artifactId,
+                                 String relativePath,
+                                 String status) {
+        if (type == null || occurredAt == null) {
+            return;
+        }
+
+        events.add(new ActivityEvent(
+                type,
+                occurredAt,
+                safeFailureMessage(message),
+                executionId,
+                groupRole,
+                shardIndex,
+                workerId,
+                safeFailureMessage(workerHostname),
+                artifactId,
+                safeFailureMessage(relativePath),
+                status
+        ));
+    }
+
+    private static AdminExecutionGroupActivityEventType childEventType(WorkExecution execution,
+                                                                       WorkExecutionStatus status) {
+        if (execution.getGroupRole() == WorkExecutionGroupRole.MERGE) {
+            return switch (status) {
+                case QUEUED -> AdminExecutionGroupActivityEventType.MERGE_CREATED;
+                case ASSIGNED -> AdminExecutionGroupActivityEventType.MERGE_ASSIGNED;
+                case CLAIMED -> AdminExecutionGroupActivityEventType.MERGE_CLAIMED;
+                case RUNNING -> AdminExecutionGroupActivityEventType.MERGE_RUNNING;
+                case SUCCEEDED -> AdminExecutionGroupActivityEventType.MERGE_SUCCEEDED;
+                case FAILED -> AdminExecutionGroupActivityEventType.MERGE_FAILED;
+                case CANCELLED -> AdminExecutionGroupActivityEventType.MERGE_CANCELLED;
+                case EXPIRED -> AdminExecutionGroupActivityEventType.MERGE_EXPIRED;
+            };
+        }
+
+        if (execution.getGroupRole() == WorkExecutionGroupRole.SHARD) {
+            return switch (status) {
+                case QUEUED -> AdminExecutionGroupActivityEventType.SHARD_CREATED;
+                case ASSIGNED -> AdminExecutionGroupActivityEventType.SHARD_ASSIGNED;
+                case CLAIMED -> AdminExecutionGroupActivityEventType.SHARD_CLAIMED;
+                case RUNNING -> AdminExecutionGroupActivityEventType.SHARD_RUNNING;
+                case SUCCEEDED -> AdminExecutionGroupActivityEventType.SHARD_SUCCEEDED;
+                case FAILED -> AdminExecutionGroupActivityEventType.SHARD_FAILED;
+                case CANCELLED -> AdminExecutionGroupActivityEventType.SHARD_CANCELLED;
+                case EXPIRED -> AdminExecutionGroupActivityEventType.SHARD_EXPIRED;
+            };
+        }
+
+        return null;
+    }
+
+    private static String childCreatedMessage(WorkExecution execution) {
+        if (execution.getGroupRole() == WorkExecutionGroupRole.MERGE) {
+            return "Merge execution was created.";
+        }
+
+        return shardMessagePrefix(execution) + " was created.";
+    }
+
+    private static String childWorkerMessage(WorkExecution execution,
+                                             WorkExecutionStatus status,
+                                             ExecutionAssignment assignment) {
+        String action = switch (status) {
+            case ASSIGNED -> "assigned to";
+            case CLAIMED -> "claimed by";
+            case RUNNING -> "started by";
+            default -> throw new IllegalArgumentException("Unsupported worker child status: " + status);
+        };
+        String workerLabel = assignment == null
+                ? "worker"
+                : "worker " + safeFailureMessage(assignment.getWorker().getHostname());
+        if (execution.getGroupRole() == WorkExecutionGroupRole.MERGE) {
+            return "Merge execution was " + action + " " + workerLabel + ".";
+        }
+
+        return shardMessagePrefix(execution) + " was " + action + " " + workerLabel + ".";
+    }
+
+    private static String childTerminalMessage(WorkExecution execution, WorkExecutionStatus status) {
+        String statusLabel = switch (status) {
+            case SUCCEEDED -> "succeeded";
+            case FAILED -> "failed";
+            case CANCELLED -> "was cancelled";
+            case EXPIRED -> "expired";
+            default -> throw new IllegalArgumentException("Unsupported terminal child status: " + status);
+        };
+        if (execution.getGroupRole() == WorkExecutionGroupRole.MERGE) {
+            return "Merge execution " + statusLabel + ".";
+        }
+
+        String shardPrefix = shardMessagePrefix(execution);
+        return status == WorkExecutionStatus.CANCELLED
+                ? shardPrefix + " " + statusLabel + "."
+                : shardPrefix + " " + statusLabel + ".";
+    }
+
+    private static String artifactMessage(WorkExecution execution, String relativePath) {
+        String artifactLabel = relativePath == null ? "Artifact" : "Artifact " + relativePath;
+        if (execution.getGroupRole() == WorkExecutionGroupRole.MERGE) {
+            return artifactLabel + " was uploaded by merge execution.";
+        }
+        if (execution.getGroupRole() == WorkExecutionGroupRole.SHARD) {
+            return artifactLabel + " was uploaded by shard " + execution.getShardIndex() + ".";
+        }
+
+        return artifactLabel + " was uploaded.";
+    }
+
+    private static String shardMessagePrefix(WorkExecution execution) {
+        return "Shard " + execution.getShardIndex();
+    }
+
+    private static String groupRoleName(WorkExecution execution) {
+        return execution.getGroupRole() == null ? null : execution.getGroupRole().name();
+    }
+
+    private static UUID workerId(ExecutionAssignment assignment) {
+        return assignment == null ? null : assignment.getWorker().getId();
+    }
+
+    private static String workerHostname(ExecutionAssignment assignment) {
+        return assignment == null ? null : assignment.getWorker().getHostname();
     }
 
     private static AdminExecutionGroupArtifactSummaryResponseDto toArtifactSummary(
@@ -753,6 +1184,49 @@ public class AdminExecutionGroupQueryService {
         return current;
     }
 
+    private static LocalDateTime coalesceTimestamp(LocalDateTime... timestamps) {
+        for (LocalDateTime timestamp : timestamps) {
+            if (timestamp != null) {
+                return timestamp;
+            }
+        }
+
+        return null;
+    }
+
+    private static int activityEventPriority(AdminExecutionGroupActivityEventType type) {
+        return switch (type) {
+            case GROUP_CREATED -> 0;
+            case SHARD_CREATED, MERGE_CREATED -> 1;
+            case SHARD_ASSIGNED, MERGE_ASSIGNED -> 2;
+            case SHARD_CLAIMED, MERGE_CLAIMED -> 3;
+            case SHARD_RUNNING, MERGE_RUNNING -> 4;
+            case SHARD_SUCCEEDED, SHARD_FAILED, SHARD_CANCELLED, SHARD_EXPIRED -> 5;
+            case MERGE_SUCCEEDED, MERGE_FAILED, MERGE_CANCELLED, MERGE_EXPIRED -> 6;
+            case ARTIFACT_UPLOADED -> 7;
+            case GROUP_SCHEDULING,
+                 GROUP_RUNNING,
+                 GROUP_MERGING,
+                 GROUP_SUCCEEDED,
+                 GROUP_PARTIALLY_FAILED,
+                 GROUP_FAILED,
+                 GROUP_CANCELLING,
+                 GROUP_CANCELLED,
+                 GROUP_EXPIRED -> 8;
+        };
+    }
+
+    private static int groupRoleOrder(String groupRole) {
+        if (WorkExecutionGroupRole.SHARD.name().equals(groupRole)) {
+            return 0;
+        }
+        if (WorkExecutionGroupRole.MERGE.name().equals(groupRole)) {
+            return 1;
+        }
+
+        return 2;
+    }
+
     private static String safeText(String value) {
         if (value == null || value.isBlank()) {
             return null;
@@ -785,6 +1259,37 @@ public class AdminExecutionGroupQueryService {
         return redacted.length() > MAX_FAILURE_MESSAGE_LENGTH
                 ? redacted.substring(0, MAX_FAILURE_MESSAGE_LENGTH)
                 : redacted;
+    }
+
+    private record ActivityEvent(
+            AdminExecutionGroupActivityEventType type,
+            LocalDateTime occurredAt,
+            String message,
+            UUID executionId,
+            String groupRole,
+            Integer shardIndex,
+            UUID workerId,
+            String workerHostname,
+            UUID artifactId,
+            String relativePath,
+            String status
+    ) {
+
+        private AdminExecutionGroupActivityResponseDto.ActivityEventResponseDto toResponse() {
+            return new AdminExecutionGroupActivityResponseDto.ActivityEventResponseDto(
+                    type,
+                    occurredAt,
+                    message,
+                    executionId,
+                    groupRole,
+                    shardIndex,
+                    workerId,
+                    workerHostname,
+                    artifactId,
+                    relativePath,
+                    status
+            );
+        }
     }
 
     private record OffsetLimitPageRequest(int offset, int limit) implements Pageable {

@@ -231,6 +231,11 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("Authentication failed."));
 
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity", group.getId())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
         mockMvc.perform(post("/api/admin/execution-groups")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(createRequest)
@@ -274,6 +279,12 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("Authentication failed."));
 
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity", group.getId())
+                        .header(API_KEY_HEADER, credentials.rawApiKey())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
         mockMvc.perform(post("/api/admin/execution-groups")
                         .header(API_KEY_HEADER, credentials.rawApiKey())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -320,6 +331,12 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message").value("Access denied."));
 
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity", group.getId())
+                        .with(user("operator").roles("USER"))
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("Access denied."));
+
         mockMvc.perform(post("/api/admin/execution-groups")
                         .with(user("operator").roles("USER"))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -358,6 +375,11 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isOk());
 
         mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/artifacts", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity", group.getId())
                         .with(admin())
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk());
@@ -783,6 +805,309 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .getContentAsString();
 
         assertSafeGroupArtifactResponse(response);
+    }
+
+    @Test
+    void shouldReturnActivityForShardOnlySucceededGroupWithoutMergeEvents() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroupAt(
+                "Activity shard success",
+                1,
+                ExecutionGroupMergeMode.NONE,
+                ExecutionGroupFailurePolicy.FAIL_FAST,
+                BASE_TIME
+        );
+        Worker worker = createApprovedWorker("activity-shard-success");
+        WorkExecution shard = createQueuedShardExecutionAt(
+                group,
+                version,
+                0,
+                1,
+                "Activity shard",
+                BASE_TIME.plusSeconds(1)
+        );
+        assignmentService.assignExecution(
+                shard.getId(),
+                worker.getId(),
+                ExecutionAssignmentMode.REQUIRE,
+                BASE_TIME.plusSeconds(2)
+        );
+        lifecycleService.markClaimed(shard.getId(), BASE_TIME.plusSeconds(3));
+        lifecycleService.markRunning(shard.getId(), BASE_TIME.plusSeconds(4));
+        lifecycleService.markSucceeded(shard.getId(), BASE_TIME.plusSeconds(5));
+        ExecutionArtifact artifact = createOutputArtifact(
+                shard,
+                worker,
+                "result.json",
+                "result.json",
+                BASE_TIME.plusSeconds(6)
+        );
+        group.markSucceeded(BASE_TIME.plusSeconds(7));
+        groupRepository.saveAndFlush(group);
+
+        String response = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.executionGroupId").value(group.getId().toString()))
+                .andExpect(jsonPath("$.displayName").value("Activity shard success"))
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.mergeMode").value("NONE"))
+                .andExpect(jsonPath("$.failurePolicy").value("FAIL_FAST"))
+                .andExpect(jsonPath("$.generatedAt").exists())
+                .andExpect(jsonPath("$.events", hasSize(8)))
+                .andExpect(jsonPath("$.events[0].type").value("GROUP_CREATED"))
+                .andExpect(jsonPath("$.events[0].status").value("CREATED"))
+                .andExpect(jsonPath("$.events[1].type").value("SHARD_CREATED"))
+                .andExpect(jsonPath("$.events[1].executionId").value(shard.getId().toString()))
+                .andExpect(jsonPath("$.events[1].groupRole").value("SHARD"))
+                .andExpect(jsonPath("$.events[1].shardIndex").value(0))
+                .andExpect(jsonPath("$.events[2].type").value("SHARD_ASSIGNED"))
+                .andExpect(jsonPath("$.events[2].workerId").value(worker.getId().toString()))
+                .andExpect(jsonPath("$.events[2].workerHostname").value(worker.getHostname()))
+                .andExpect(jsonPath("$.events[3].type").value("SHARD_CLAIMED"))
+                .andExpect(jsonPath("$.events[4].type").value("SHARD_RUNNING"))
+                .andExpect(jsonPath("$.events[5].type").value("SHARD_SUCCEEDED"))
+                .andExpect(jsonPath("$.events[5].status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.events[6].type").value("ARTIFACT_UPLOADED"))
+                .andExpect(jsonPath("$.events[6].artifactId").value(artifact.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.events[6].relativePath").value("result.json"))
+                .andExpect(jsonPath("$.events[7].type").value("GROUP_SUCCEEDED"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(eventTypes(response))
+                .doesNotContain("MERGE_CREATED", "MERGE_SUCCEEDED");
+        assertSafeGroupActivityResponse(response);
+    }
+
+    @Test
+    void shouldReturnActivityForAgentMergeSucceededGroup() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroupAt(
+                "Activity agent merge",
+                1,
+                ExecutionGroupMergeMode.AGENT,
+                ExecutionGroupFailurePolicy.FAIL_FAST,
+                BASE_TIME
+        );
+        Worker shardWorker = createApprovedWorker("activity-agent-shard");
+        Worker mergeWorker = createApprovedWorker("activity-agent-merge");
+        WorkExecution shard = createQueuedShardExecutionAt(
+                group,
+                version,
+                0,
+                1,
+                "Activity shard",
+                BASE_TIME.plusSeconds(1)
+        );
+        assignmentService.assignExecution(
+                shard.getId(),
+                shardWorker.getId(),
+                ExecutionAssignmentMode.REQUIRE,
+                BASE_TIME.plusSeconds(2)
+        );
+        lifecycleService.markClaimed(shard.getId(), BASE_TIME.plusSeconds(3));
+        lifecycleService.markRunning(shard.getId(), BASE_TIME.plusSeconds(4));
+        lifecycleService.markSucceeded(shard.getId(), BASE_TIME.plusSeconds(5));
+        WorkExecution merge = createQueuedMergeExecutionAt(
+                group,
+                version,
+                1,
+                "Activity merge",
+                BASE_TIME.plusSeconds(10)
+        );
+        assignmentService.assignExecution(
+                merge.getId(),
+                mergeWorker.getId(),
+                ExecutionAssignmentMode.REQUIRE,
+                BASE_TIME.plusSeconds(11)
+        );
+        lifecycleService.markClaimed(merge.getId(), BASE_TIME.plusSeconds(12));
+        lifecycleService.markRunning(merge.getId(), BASE_TIME.plusSeconds(13));
+        lifecycleService.markSucceeded(merge.getId(), BASE_TIME.plusSeconds(14));
+        ExecutionArtifact artifact = createOutputArtifact(
+                merge,
+                mergeWorker,
+                "final-result.json",
+                "final-result.json",
+                BASE_TIME.plusSeconds(15)
+        );
+        group.markSucceeded(BASE_TIME.plusSeconds(16));
+        groupRepository.saveAndFlush(group);
+
+        String response = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.mergeMode").value("AGENT"))
+                .andExpect(jsonPath("$.events", hasSize(13)))
+                .andExpect(jsonPath("$.events[0].type").value("GROUP_CREATED"))
+                .andExpect(jsonPath("$.events[1].type").value("SHARD_CREATED"))
+                .andExpect(jsonPath("$.events[5].type").value("SHARD_SUCCEEDED"))
+                .andExpect(jsonPath("$.events[6].type").value("MERGE_CREATED"))
+                .andExpect(jsonPath("$.events[6].executionId").value(merge.getId().toString()))
+                .andExpect(jsonPath("$.events[6].groupRole").value("MERGE"))
+                .andExpect(jsonPath("$.events[7].type").value("MERGE_ASSIGNED"))
+                .andExpect(jsonPath("$.events[7].workerId").value(mergeWorker.getId().toString()))
+                .andExpect(jsonPath("$.events[8].type").value("MERGE_CLAIMED"))
+                .andExpect(jsonPath("$.events[9].type").value("MERGE_RUNNING"))
+                .andExpect(jsonPath("$.events[10].type").value("MERGE_SUCCEEDED"))
+                .andExpect(jsonPath("$.events[11].type").value("ARTIFACT_UPLOADED"))
+                .andExpect(jsonPath("$.events[11].artifactId").value(artifact.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.events[11].groupRole").value("MERGE"))
+                .andExpect(jsonPath("$.events[11].relativePath").value("final-result.json"))
+                .andExpect(jsonPath("$.events[12].type").value("GROUP_SUCCEEDED"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(eventTypes(response))
+                .contains("SHARD_CREATED", "SHARD_SUCCEEDED", "MERGE_CREATED", "MERGE_SUCCEEDED", "GROUP_SUCCEEDED");
+        assertSafeGroupActivityResponse(response);
+    }
+
+    @Test
+    void shouldReturnActivityForCancelledGroupWithoutMergeEvents() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroupAt(
+                "Activity cancelled",
+                1,
+                ExecutionGroupMergeMode.AGENT,
+                ExecutionGroupFailurePolicy.FAIL_FAST,
+                BASE_TIME
+        );
+        WorkExecution shard = createQueuedShardExecutionAt(
+                group,
+                version,
+                0,
+                1,
+                "Cancelled shard",
+                BASE_TIME.plusSeconds(1)
+        );
+        shard.cancelBeforeStart(
+                "ADMIN_CANCELLED",
+                ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE,
+                BASE_TIME.plusSeconds(2)
+        );
+        executionRepository.saveAndFlush(shard);
+        group.markCancelling(
+                ExecutionGroupCancellationService.ADMIN_GROUP_CANCELLED_FAILURE_CODE,
+                ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE,
+                BASE_TIME.plusSeconds(3)
+        );
+        group.markCancelled(
+                ExecutionGroupCancellationService.ADMIN_GROUP_CANCELLED_FAILURE_CODE,
+                ExecutionGroupCancellationService.DEFAULT_GROUP_CANCELLATION_MESSAGE,
+                BASE_TIME.plusSeconds(4)
+        );
+        groupRepository.saveAndFlush(group);
+
+        String response = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.mergeMode").value("AGENT"))
+                .andExpect(jsonPath("$.events", hasSize(5)))
+                .andExpect(jsonPath("$.events[0].type").value("GROUP_CREATED"))
+                .andExpect(jsonPath("$.events[1].type").value("SHARD_CREATED"))
+                .andExpect(jsonPath("$.events[2].type").value("SHARD_CANCELLED"))
+                .andExpect(jsonPath("$.events[3].type").value("GROUP_CANCELLING"))
+                .andExpect(jsonPath("$.events[4].type").value("GROUP_CANCELLED"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(eventTypes(response))
+                .doesNotContain("MERGE_CREATED", "MERGE_CANCELLED");
+        assertSafeGroupActivityResponse(response);
+    }
+
+    @Test
+    void shouldReturnNotFoundForUnknownExecutionGroupActivity() throws Exception {
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity", UUID.randomUUID())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Execution group not found."));
+    }
+
+    @Test
+    void shouldSortActivityEventsDeterministicallyWhenTimestampsTie() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroupAt(
+                "Activity ordering",
+                2,
+                ExecutionGroupMergeMode.AGENT,
+                ExecutionGroupFailurePolicy.FAIL_FAST,
+                BASE_TIME
+        );
+        Worker worker = createApprovedWorker("activity-ordering");
+        WorkExecution shardOne = createQueuedShardExecutionAt(group, version, 1, 2, "Shard one", BASE_TIME);
+        WorkExecution merge = createQueuedMergeExecutionAt(group, version, 2, "Merge", BASE_TIME);
+        WorkExecution shardZero = createQueuedShardExecutionAt(group, version, 0, 2, "Shard zero", BASE_TIME);
+        ExecutionArtifact beta = createOutputArtifact(shardZero, worker, "b.json", "b.json", BASE_TIME);
+        ExecutionArtifact finalResult = createOutputArtifact(merge, worker, "final.json", "final.json", BASE_TIME);
+        ExecutionArtifact alpha = createOutputArtifact(shardZero, worker, "a.json", "a.json", BASE_TIME);
+
+        String response = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.events", hasSize(7)))
+                .andExpect(jsonPath("$.events[0].type").value("GROUP_CREATED"))
+                .andExpect(jsonPath("$.events[1].type").value("SHARD_CREATED"))
+                .andExpect(jsonPath("$.events[1].executionId").value(shardZero.getId().toString()))
+                .andExpect(jsonPath("$.events[1].shardIndex").value(0))
+                .andExpect(jsonPath("$.events[2].type").value("SHARD_CREATED"))
+                .andExpect(jsonPath("$.events[2].executionId").value(shardOne.getId().toString()))
+                .andExpect(jsonPath("$.events[2].shardIndex").value(1))
+                .andExpect(jsonPath("$.events[3].type").value("MERGE_CREATED"))
+                .andExpect(jsonPath("$.events[3].executionId").value(merge.getId().toString()))
+                .andExpect(jsonPath("$.events[4].type").value("ARTIFACT_UPLOADED"))
+                .andExpect(jsonPath("$.events[4].artifactId").value(alpha.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.events[4].relativePath").value("a.json"))
+                .andExpect(jsonPath("$.events[5].type").value("ARTIFACT_UPLOADED"))
+                .andExpect(jsonPath("$.events[5].artifactId").value(beta.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.events[5].relativePath").value("b.json"))
+                .andExpect(jsonPath("$.events[6].type").value("ARTIFACT_UPLOADED"))
+                .andExpect(jsonPath("$.events[6].artifactId").value(finalResult.getArtifact().getId().toString()))
+                .andExpect(jsonPath("$.events[6].groupRole").value("MERGE"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertSafeGroupActivityResponse(response);
+    }
+
+    @Test
+    void shouldReturnActivityForEmptyGroupWithoutArtifactEvents() throws Exception {
+        ExecutionGroup group = createGroupAt(
+                "Activity empty",
+                1,
+                ExecutionGroupMergeMode.NONE,
+                ExecutionGroupFailurePolicy.FAIL_FAST,
+                BASE_TIME
+        );
+
+        String response = mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity", group.getId())
+                        .with(admin())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.executionGroupId").value(group.getId().toString()))
+                .andExpect(jsonPath("$.events", hasSize(1)))
+                .andExpect(jsonPath("$.events[0].type").value("GROUP_CREATED"))
+                .andExpect(jsonPath("$.events[0].status").value("CREATED"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(eventTypes(response))
+                .doesNotContain("ARTIFACT_UPLOADED", "MERGE_CREATED");
+        assertSafeGroupActivityResponse(response);
     }
 
     @Test
@@ -2680,12 +3005,20 @@ class AdminExecutionGroupControllerIntegrationTest {
                                        int shardCount,
                                        ExecutionGroupMergeMode mergeMode,
                                        ExecutionGroupFailurePolicy failurePolicy) {
-        return groupRepository.save(ExecutionGroup.create(
+        return createGroupAt(displayName, shardCount, mergeMode, failurePolicy, LocalDateTime.now());
+    }
+
+    private ExecutionGroup createGroupAt(String displayName,
+                                         int shardCount,
+                                         ExecutionGroupMergeMode mergeMode,
+                                         ExecutionGroupFailurePolicy failurePolicy,
+                                         LocalDateTime createdAt) {
+        return groupRepository.saveAndFlush(ExecutionGroup.create(
                 displayName,
                 mergeMode,
                 failurePolicy,
                 shardCount,
-                LocalDateTime.now()
+                createdAt
         ));
     }
 
@@ -2762,11 +3095,46 @@ class AdminExecutionGroupControllerIntegrationTest {
         return executionRepository.saveAndFlush(execution);
     }
 
+    private WorkExecution createQueuedShardExecutionAt(ExecutionGroup group,
+                                                       WorkDefinitionVersion version,
+                                                       int shardIndex,
+                                                       int shardCount,
+                                                       String displayName,
+                                                       LocalDateTime createdAt) {
+        WorkExecution execution = WorkExecution.createQueued(
+                version,
+                null,
+                JsonNodeFactory.instance.objectNode(),
+                ResourceRequest.zero(),
+                displayName,
+                createdAt
+        );
+        execution.attachToGroupAsShard(group, shardIndex, shardCount);
+        return executionRepository.saveAndFlush(execution);
+    }
+
     private WorkExecution createQueuedMergeExecution(ExecutionGroup group,
                                                      WorkDefinitionVersion version,
                                                      Integer shardCount,
                                                      String displayName) {
         WorkExecution execution = createOneOff(version, displayName);
+        execution.attachToGroupAsMerge(group, shardCount);
+        return executionRepository.saveAndFlush(execution);
+    }
+
+    private WorkExecution createQueuedMergeExecutionAt(ExecutionGroup group,
+                                                       WorkDefinitionVersion version,
+                                                       Integer shardCount,
+                                                       String displayName,
+                                                       LocalDateTime createdAt) {
+        WorkExecution execution = WorkExecution.createQueued(
+                version,
+                null,
+                JsonNodeFactory.instance.objectNode(),
+                ResourceRequest.zero(),
+                displayName,
+                createdAt
+        );
         execution.attachToGroupAsMerge(group, shardCount);
         return executionRepository.saveAndFlush(execution);
     }
@@ -2999,6 +3367,22 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .doesNotContain("target/test-artifacts")
                 .doesNotContain("mergeConfigurationTemplate")
                 .doesNotContain("mergePlan");
+    }
+
+    private static void assertSafeGroupActivityResponse(String response) {
+        assertSafeAdminResponse(response);
+        assertThat(response)
+                .doesNotContain("sha256")
+                .doesNotContain("uploadedByWorkerId")
+                .doesNotContain("createdBy")
+                .doesNotContain("storage_path")
+                .doesNotContain("target/test-artifacts")
+                .doesNotContain("mergeConfigurationTemplate")
+                .doesNotContain("mergePlan");
+    }
+
+    private static List<String> eventTypes(String response) {
+        return JsonPath.read(response, "$.events[*].type");
     }
 
     private record WorkerCredentials(Worker worker, String rawApiKey) {
