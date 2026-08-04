@@ -55,11 +55,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -86,11 +88,13 @@ import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @Testcontainers
@@ -236,6 +240,11 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("Authentication failed."));
 
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity/stream", group.getId())
+                        .accept(MediaType.TEXT_EVENT_STREAM))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
         mockMvc.perform(post("/api/admin/execution-groups")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(createRequest)
@@ -285,6 +294,12 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("Authentication failed."));
 
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity/stream", group.getId())
+                        .header(API_KEY_HEADER, credentials.rawApiKey())
+                        .accept(MediaType.TEXT_EVENT_STREAM))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Authentication failed."));
+
         mockMvc.perform(post("/api/admin/execution-groups")
                         .header(API_KEY_HEADER, credentials.rawApiKey())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -337,6 +352,12 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message").value("Access denied."));
 
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity/stream", group.getId())
+                        .with(user("operator").roles("USER"))
+                        .accept(MediaType.TEXT_EVENT_STREAM))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("Access denied."));
+
         mockMvc.perform(post("/api/admin/execution-groups")
                         .with(user("operator").roles("USER"))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -383,6 +404,8 @@ class AdminExecutionGroupControllerIntegrationTest {
                         .with(admin())
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk());
+
+        activityStreamResponse(group.getId(), "maxEvents", "2");
 
         mockMvc.perform(post("/api/admin/execution-groups/{executionGroupId}/reconcile", group.getId())
                         .with(admin())
@@ -1108,6 +1131,138 @@ class AdminExecutionGroupControllerIntegrationTest {
         assertThat(eventTypes(response))
                 .doesNotContain("ARTIFACT_UPLOADED", "MERGE_CREATED");
         assertSafeGroupActivityResponse(response);
+    }
+
+    @Test
+    void shouldReturnNotFoundForUnknownExecutionGroupActivityStream() throws Exception {
+        mockMvc.perform(get("/api/admin/execution-groups/{executionGroupId}/activity/stream", UUID.randomUUID())
+                        .with(admin())
+                        .accept(MediaType.ALL))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Execution group not found."));
+    }
+
+    @Test
+    void shouldStreamInitialGroupDetailAndActivitySnapshot() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroupAt(
+                "Activity stream initial",
+                1,
+                ExecutionGroupMergeMode.NONE,
+                ExecutionGroupFailurePolicy.FAIL_FAST,
+                BASE_TIME
+        );
+        createQueuedShardExecutionAt(group, version, 0, 1, "Initial stream shard", BASE_TIME.plusSeconds(1));
+
+        String response = activityStreamResponse(group.getId(), "maxEvents", "2");
+
+        assertThat(response)
+                .contains("event:group-detail")
+                .contains("event:activity-snapshot")
+                .contains("\"executionGroupId\":\"" + group.getId() + "\"")
+                .contains("\"displayName\":\"Activity stream initial\"")
+                .contains("\"events\":[")
+                .doesNotContain("event:heartbeat");
+        assertThat(countOccurrences(response, "event:group-detail")).isEqualTo(1);
+        assertThat(countOccurrences(response, "event:activity-snapshot")).isEqualTo(1);
+        assertSafeGroupActivityStreamResponse(response);
+    }
+
+    @Test
+    void shouldEmitActivityStreamHeartbeatWhenSnapshotsDoNotChange() throws Exception {
+        ExecutionGroup group = createGroupAt(
+                "Activity stream heartbeat",
+                1,
+                ExecutionGroupMergeMode.NONE,
+                ExecutionGroupFailurePolicy.FAIL_FAST,
+                BASE_TIME
+        );
+
+        String response = activityStreamResponse(
+                group.getId(),
+                "pollIntervalMs", "500",
+                "heartbeatIntervalMs", "1000",
+                "maxEvents", "4"
+        );
+
+        assertThat(response)
+                .contains("event:group-detail")
+                .contains("event:activity-snapshot")
+                .contains("event:heartbeat")
+                .contains("event:stream-complete")
+                .contains("\"reason\":\"MAX_EVENTS_REACHED\"");
+        assertThat(countOccurrences(response, "event:group-detail")).isEqualTo(1);
+        assertThat(countOccurrences(response, "event:activity-snapshot")).isEqualTo(1);
+        assertSafeGroupActivityStreamResponse(response);
+    }
+
+    @Test
+    void shouldCloseTerminalActivityStreamWhenRequested() throws Exception {
+        ExecutionGroup group = createGroupAt(
+                "Activity stream terminal",
+                1,
+                ExecutionGroupMergeMode.NONE,
+                ExecutionGroupFailurePolicy.FAIL_FAST,
+                BASE_TIME
+        );
+        group.markSucceeded(BASE_TIME.plusSeconds(1));
+        groupRepository.saveAndFlush(group);
+
+        String response = activityStreamResponse(
+                group.getId(),
+                "closeOnTerminal", "true",
+                "maxEvents", "3"
+        );
+
+        assertThat(response)
+                .contains("event:group-detail")
+                .contains("event:activity-snapshot")
+                .contains("event:stream-complete")
+                .contains("\"reason\":\"TERMINAL_GROUP_REACHED\"")
+                .doesNotContain("event:heartbeat");
+        assertSafeGroupActivityStreamResponse(response);
+    }
+
+    @Test
+    void shouldRejectInvalidActivityStreamParameters() throws Exception {
+        ExecutionGroup group = createGroup("Invalid stream params", 1);
+
+        expectBadActivityStream(group, "pollIntervalMs", "499")
+                .andExpect(jsonPath("$.message").value("pollIntervalMs must be between 500 and 10000."));
+        expectBadActivityStream(group, "pollIntervalMs", "10001")
+                .andExpect(jsonPath("$.message").value("pollIntervalMs must be between 500 and 10000."));
+        expectBadActivityStream(group, "heartbeatIntervalMs", "999")
+                .andExpect(jsonPath("$.message").value("heartbeatIntervalMs must be between 1000 and 60000."));
+        expectBadActivityStream(group, "heartbeatIntervalMs", "60001")
+                .andExpect(jsonPath("$.message").value("heartbeatIntervalMs must be between 1000 and 60000."));
+        expectBadActivityStream(group, "pollIntervalMs", "2000", "heartbeatIntervalMs", "1000")
+                .andExpect(jsonPath("$.message")
+                        .value("heartbeatIntervalMs must be greater than or equal to pollIntervalMs."));
+        expectBadActivityStream(group, "closeOnTerminal", "maybe")
+                .andExpect(jsonPath("$.message").value("closeOnTerminal must be true or false."));
+        expectBadActivityStream(group, "maxEvents", "0")
+                .andExpect(jsonPath("$.message").value("maxEvents must be between 1 and 1000."));
+        expectBadActivityStream(group, "maxEvents", "1001")
+                .andExpect(jsonPath("$.message").value("maxEvents must be between 1 and 1000."));
+    }
+
+    @Test
+    void shouldNotMutateRuntimeStateWhenOpeningActivityStream() throws Exception {
+        WorkDefinitionVersion version = noOpVersion();
+        ExecutionGroup group = createGroup("Activity stream read only", 1);
+        createQueuedShardExecution(group, version, 0, 1, "Read only stream shard");
+        long executionCount = executionRepository.count();
+        long assignmentCount = assignmentRepository.count();
+        long artifactCount = artifactRepository.count();
+        long groupCount = groupRepository.count();
+
+        String response = activityStreamResponse(group.getId(), "maxEvents", "2");
+
+        assertSafeGroupActivityStreamResponse(response);
+        assertThat(executionRepository.count()).isEqualTo(executionCount);
+        assertThat(assignmentRepository.count()).isEqualTo(assignmentCount);
+        assertThat(artifactRepository.count()).isEqualTo(artifactCount);
+        assertThat(groupRepository.count()).isEqualTo(groupCount);
     }
 
     @Test
@@ -2478,6 +2633,40 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .andExpect(status().isBadRequest());
     }
 
+    private org.springframework.test.web.servlet.ResultActions expectBadActivityStream(ExecutionGroup group,
+                                                                                      String... params) throws Exception {
+        var requestBuilder = get("/api/admin/execution-groups/{executionGroupId}/activity/stream", group.getId())
+                .with(admin())
+                .accept(MediaType.ALL);
+        for (int index = 0; index < params.length; index += 2) {
+            requestBuilder.param(params[index], params[index + 1]);
+        }
+
+        return mockMvc.perform(requestBuilder)
+                .andExpect(status().isBadRequest());
+    }
+
+    private String activityStreamResponse(UUID executionGroupId, String... params) throws Exception {
+        var requestBuilder = get("/api/admin/execution-groups/{executionGroupId}/activity/stream", executionGroupId)
+                .with(admin())
+                .accept(MediaType.TEXT_EVENT_STREAM);
+        for (int index = 0; index < params.length; index += 2) {
+            requestBuilder.param(params[index], params[index + 1]);
+        }
+
+        MvcResult result = mockMvc.perform(requestBuilder)
+                .andReturn();
+        if (result.getRequest().isAsyncStarted()) {
+            result.getAsyncResult(5_000L);
+            result = mockMvc.perform(asyncDispatch(result))
+                    .andReturn();
+        }
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(HttpStatus.OK.value());
+        assertThat(result.getResponse().getContentType()).contains(MediaType.TEXT_EVENT_STREAM_VALUE);
+        return result.getResponse().getContentAsString();
+    }
+
     private UUID createShardedGroup(UUID versionId,
                                     String displayName,
                                     int shardCount,
@@ -3381,8 +3570,29 @@ class AdminExecutionGroupControllerIntegrationTest {
                 .doesNotContain("mergePlan");
     }
 
+    private static void assertSafeGroupActivityStreamResponse(String response) {
+        assertSafeGroupActivityResponse(response);
+        assertThat(response)
+                .doesNotContain("lease")
+                .doesNotContain("token")
+                .doesNotContain("secret")
+                .doesNotContain("artifact/")
+                .doesNotContain("$OUTPUT_DIR");
+    }
+
     private static List<String> eventTypes(String response) {
         return JsonPath.read(response, "$.events[*].type");
+    }
+
+    private static int countOccurrences(String value, String needle) {
+        int count = 0;
+        int index = 0;
+        while ((index = value.indexOf(needle, index)) >= 0) {
+            count++;
+            index += needle.length();
+        }
+
+        return count;
     }
 
     private record WorkerCredentials(Worker worker, String rawApiKey) {

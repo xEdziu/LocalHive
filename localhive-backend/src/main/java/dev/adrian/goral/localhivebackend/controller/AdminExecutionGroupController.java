@@ -8,11 +8,14 @@ import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupChildExecutionRe
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupArtifactsResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupDetailResponseDto;
 import dev.adrian.goral.localhivebackend.dto.AdminExecutionGroupListResponseDto;
+import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupActivityStreamCommand;
+import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupActivityStreamService;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupControlService;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupCreationService;
 import dev.adrian.goral.localhivebackend.service.work.AdminExecutionGroupQueryService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -22,6 +25,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -39,6 +43,7 @@ public class AdminExecutionGroupController {
 
     private final AdminExecutionGroupCreationService creationService;
     private final AdminExecutionGroupQueryService queryService;
+    private final AdminExecutionGroupActivityStreamService activityStreamService;
     private final AdminExecutionGroupControlService controlService;
 
     @PostMapping
@@ -94,6 +99,37 @@ public class AdminExecutionGroupController {
         return queryService.getGroupActivity(executionGroupId)
                 .map(ResponseEntity::ok)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Execution group not found."));
+    }
+
+    @GetMapping(value = "/{executionGroupId}/activity/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamGroupActivity(
+            @PathVariable UUID executionGroupId,
+            @RequestParam(required = false) String pollIntervalMs,
+            @RequestParam(required = false) String heartbeatIntervalMs,
+            @RequestParam(required = false) String closeOnTerminal,
+            @RequestParam(required = false) String maxEvents
+    ) {
+        try {
+            return activityStreamService.streamGroupActivity(new AdminExecutionGroupActivityStreamCommand(
+                    executionGroupId,
+                    parseOptionalInt(
+                            pollIntervalMs,
+                            AdminExecutionGroupActivityStreamService.DEFAULT_POLL_INTERVAL_MS,
+                            "pollIntervalMs"
+                    ),
+                    parseOptionalInt(
+                            heartbeatIntervalMs,
+                            AdminExecutionGroupActivityStreamService.DEFAULT_HEARTBEAT_INTERVAL_MS,
+                            "heartbeatIntervalMs"
+                    ),
+                    parseOptionalBoolean(closeOnTerminal, false, "closeOnTerminal"),
+                    parseOptionalNullableInt(maxEvents, "maxEvents")
+            ));
+        } catch (NoSuchElementException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
     }
 
     @GetMapping("/{executionGroupId}/artifacts")
@@ -190,5 +226,44 @@ public class AdminExecutionGroupController {
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("Unknown execution group status: " + rawStatus.trim());
         }
+    }
+
+    private static int parseOptionalInt(String rawValue, int defaultValue, String fieldName) {
+        Integer parsed = parseOptionalNullableInt(rawValue, fieldName);
+        return parsed == null ? defaultValue : parsed;
+    }
+
+    private static Integer parseOptionalNullableInt(String rawValue, String fieldName) {
+        if (rawValue == null) {
+            return null;
+        }
+        if (rawValue.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " must not be blank.");
+        }
+
+        try {
+            return Integer.parseInt(rawValue);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(fieldName + " must be a whole number.");
+        }
+    }
+
+    private static boolean parseOptionalBoolean(String rawValue, boolean defaultValue, String fieldName) {
+        if (rawValue == null) {
+            return defaultValue;
+        }
+        if (rawValue.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " must not be blank.");
+        }
+
+        String normalized = rawValue.trim().toLowerCase(Locale.ROOT);
+        if ("true".equals(normalized)) {
+            return true;
+        }
+        if ("false".equals(normalized)) {
+            return false;
+        }
+
+        throw new IllegalArgumentException(fieldName + " must be true or false.");
     }
 }

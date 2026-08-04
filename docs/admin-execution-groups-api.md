@@ -1,6 +1,6 @@
 # Admin Execution Groups API
 
-M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile. M21 adds a derived observability summary to the group detail response and deterministic child execution ordering. M22 adds read-only group output artifact discovery and a lightweight group artifact summary. M23 adds explicit lifecycle action metadata to the group detail response. M24 adds a derived activity feed endpoint for admin polling and future live update foundations.
+M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile. M21 adds a derived observability summary to the group detail response and deterministic child execution ordering. M22 adds read-only group output artifact discovery and a lightweight group artifact summary. M23 adds explicit lifecycle action metadata to the group detail response. M24 adds a derived activity feed endpoint for admin polling. M25 adds a lightweight Server-Sent Events stream for admin UI live updates.
 
 An `ExecutionGroup` is group-level metadata for sharding. Child work remains ordinary `WorkExecution` records with nullable group metadata. Master creates `SHARD` children, expands a controlled Docker command template for each shard, assigns as many shards as currently eligible workers allow, and schedules later waves when child executions report terminal status. With `mergeMode = AGENT`, Master later creates one `MERGE` child execution after shard policy allows merge.
 
@@ -619,6 +619,83 @@ Safety:
 
 This endpoint is a derived read model, not a persisted audit log. It reconstructs a best-effort timeline from the current `ExecutionGroup`, child `WorkExecution`, `ExecutionAssignment`, `Artifact`, and `ExecutionArtifact` rows. If an older transition has no separate timestamp column, M24 does not invent a synthetic event for that transition.
 
+## Execution Group Activity Stream
+
+```http
+GET /api/admin/execution-groups/{executionGroupId}/activity/stream
+```
+
+M25 uses Server-Sent Events for UI-oriented live updates. The stream is one-way from Master to admin clients, works over ordinary HTTP, and is easier to inspect with curl or an HTTP client than a bidirectional protocol. WebSocket and SOAP remain planned as later research protocol adapters; they are not replacements for this admin UI stream.
+
+Behavior:
+
+- existing group opens a `text/event-stream` response,
+- missing group returns `404` before opening a stream,
+- ADMIN JWT is required,
+- worker API keys are rejected,
+- opening the stream does not create executions, assignments, artifacts, cancel requests, reconcile runs, scheduler work, or worker protocol changes,
+- each polling iteration reads fresh safe derived models through the existing group detail and activity query paths,
+- no transaction is held open for the lifetime of the stream,
+- client disconnects terminate the polling loop and release stream resources.
+
+Query parameters:
+
+| Parameter | Required | Default | Validation | Description |
+| --- | --- | --- | --- | --- |
+| `pollIntervalMs` | no | `2000` | `500..10000` | How often Master refreshes group detail and activity snapshots. |
+| `heartbeatIntervalMs` | no | `10000` | `1000..60000`, and must be `>= pollIntervalMs` | How often Master emits a heartbeat when no snapshot changed. Values below `pollIntervalMs` are rejected with `400`. |
+| `closeOnTerminal` | no | `false` | `true` or `false` | When `true`, a terminal group causes a final `stream-complete` event and the stream is closed. |
+| `maxEvents` | no | unlimited | `1..1000` | Diagnostic/test cap for SSE events emitted by this endpoint. The count includes every event actually sent, including `heartbeat` and `stream-complete` when present. |
+
+SSE event names:
+
+| Event | Data |
+| --- | --- |
+| `group-detail` | Existing safe `AdminExecutionGroupDetailResponseDto`. |
+| `activity-snapshot` | Existing safe `AdminExecutionGroupActivityResponseDto`. |
+| `heartbeat` | `executionGroupId`, `generatedAt`, and current group `status`. |
+| `stream-complete` | `executionGroupId`, `generatedAt`, and `reason`, such as `MAX_EVENTS_REACHED` or `TERMINAL_GROUP_REACHED`. |
+| `stream-error` | Safe error metadata only. Stack traces and internal storage details are not exposed. |
+
+Initial stream sequence:
+
+1. `group-detail`
+2. `activity-snapshot`
+
+After the initial sequence, Master polls the existing read models. It computes deterministic digests from serialized safe DTOs and excludes volatile `generatedAt` values from the digest. If the group detail digest changes, Master emits `group-detail`. If the activity digest changes, Master emits `activity-snapshot`. If neither digest changes and the heartbeat interval has elapsed, Master emits `heartbeat`.
+
+Heartbeat data:
+
+```json
+{
+  "executionGroupId": "00000000-0000-0000-0000-000000000000",
+  "generatedAt": "2026-08-04T12:00:00",
+  "status": "RUNNING"
+}
+```
+
+Stream completion data:
+
+```json
+{
+  "executionGroupId": "00000000-0000-0000-0000-000000000000",
+  "generatedAt": "2026-08-04T12:00:05",
+  "reason": "MAX_EVENTS_REACHED"
+}
+```
+
+Security and safety:
+
+- stream snapshots reuse the same safe admin DTOs as the polling endpoints,
+- raw execution configuration snapshots are not exposed,
+- raw merge plans are not exposed,
+- API keys, password hashes, lease tokens, lease hashes, and `leaseExpiresAt` are not exposed,
+- local filesystem paths, physical artifact paths, storage roots, artifact contents, stack traces, and internal storage keys are not exposed.
+
+Browser note: native `EventSource` cannot set an `Authorization` header directly. A future admin UI may use a fetch-based SSE client/polyfill, or a cookie/session-based auth strategy if the security model is changed deliberately.
+
+This stream is still live polling over derived read models, not a persistent audit log. If the client disconnects, missed intermediate derived states are not replayed from a stored event table.
+
 ## Group Artifacts
 
 ```http
@@ -792,7 +869,7 @@ The worker claim/report protocol is unchanged.
 
 ## Current Limitations
 
-M24 does not implement:
+M25 does not implement:
 
 - `mergeMode = MASTER`,
 - background scheduler,
@@ -802,11 +879,12 @@ M24 does not implement:
 - Agent changes,
 - Docker executor changes,
 - a persistent execution group event log or audit log,
-- SSE or WebSocket streaming,
+- WebSocket protocol adapter,
+- SOAP protocol adapter,
 - frontend UI,
 - GPU support,
-- SOAP, Minecraft lifecycle, or research telemetry.
+- Minecraft lifecycle, or research telemetry.
 
 ## Future Extensions
 
-Future milestones may add background scheduling, Agent-side cooperative cancellation, Master-side merge for controlled formats, richer artifact aggregation and previews, selection diagnostics for groups, retry and requeue policies, frontend views, and live activity streaming using SSE or WebSocket on top of the M24 event model.
+Future milestones may add background scheduling, Agent-side cooperative cancellation, Master-side merge for controlled formats, richer artifact aggregation and previews, selection diagnostics for groups, retry and requeue policies, frontend views, WebSocket and SOAP research adapters, and persisted run evidence for protocol comparisons.
