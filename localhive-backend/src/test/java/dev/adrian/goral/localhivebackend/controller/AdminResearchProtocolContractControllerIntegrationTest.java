@@ -116,7 +116,7 @@ class AdminResearchProtocolContractControllerIntegrationTest {
         assertThat(JsonPath.<List<String>>read(response, "$.protocols[*].protocol"))
                 .containsExactly("REST", "WEBSOCKET", "SOAP");
         assertThat(JsonPath.<List<String>>read(response, "$.protocols[*].status"))
-                .containsExactly("AVAILABLE", "PLANNED", "PLANNED");
+                .containsExactly("AVAILABLE", "AVAILABLE", "PLANNED");
         assertThat(JsonPath.<List<String>>read(response, "$.operations[*].operation"))
                 .contains(
                         "CREATE_SINGLE_EXECUTION",
@@ -126,6 +126,7 @@ class AdminResearchProtocolContractControllerIntegrationTest {
                         "GET_GROUP_ACTIVITY",
                         "GET_GROUP_ARTIFACTS",
                         "STREAM_GROUP_ACTIVITY",
+                        "STOP_STREAM_GROUP_ACTIVITY",
                         "DOWNLOAD_ARTIFACT",
                         "CANCEL_GROUP",
                         "RECONCILE_GROUP"
@@ -142,6 +143,9 @@ class AdminResearchProtocolContractControllerIntegrationTest {
                 .contains("JSON", "XML", "BINARY", "MULTIPART");
         assertThat(JsonPath.<List<String>>read(response, "$.protocols[?(@.protocol == 'REST')].supportedOperations[*]"))
                 .contains("CREATE_EXECUTION_GROUP", "STREAM_GROUP_ACTIVITY", "DOWNLOAD_ARTIFACT");
+        assertThat(JsonPath.<List<String>>read(response, "$.protocols[?(@.protocol == 'WEBSOCKET')].supportedOperations[*]"))
+                .contains("GET_GROUP_DETAIL", "STREAM_GROUP_ACTIVITY", "STOP_STREAM_GROUP_ACTIVITY")
+                .doesNotContain("DOWNLOAD_ARTIFACT");
         assertSafeResearchResponse(response);
     }
 
@@ -155,7 +159,36 @@ class AdminResearchProtocolContractControllerIntegrationTest {
     }
 
     @Test
-    void shouldRejectPlannedWebSocketCombinationAsUnsupportedModelResult() throws Exception {
+    void shouldValidateSupportedWebSocketCombinations() throws Exception {
+        mockMvc.perform(validate("""
+                        {
+                          "protocol": "WEBSOCKET",
+                          "operation": "GET_GROUP_DETAIL",
+                          "dataTransferMode": "INLINE_JSON",
+                          "payloadFormat": "JSON"
+                        }
+                        """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(true))
+                .andExpect(jsonPath("$.reasonCode").value(nullValue()))
+                .andExpect(jsonPath("$.reasonMessage").value("Combination is supported."));
+
+        mockMvc.perform(validate("""
+                        {
+                          "protocol": "WEBSOCKET",
+                          "operation": "STREAM_GROUP_ACTIVITY",
+                          "dataTransferMode": "STREAMED_EVENTS",
+                          "payloadFormat": "JSON"
+                        }
+                        """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(true))
+                .andExpect(jsonPath("$.reasonCode").value(nullValue()))
+                .andExpect(jsonPath("$.reasonMessage").value("Combination is supported."));
+    }
+
+    @Test
+    void shouldRejectUnsupportedWebSocketCombinationAsUnsupportedModelResult() throws Exception {
         mockMvc.perform(validate("""
                         {
                           "protocol": "WEBSOCKET",
@@ -166,9 +199,7 @@ class AdminResearchProtocolContractControllerIntegrationTest {
                         """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.valid").value(false))
-                .andExpect(jsonPath("$.reasonCode").value("PROTOCOL_PLANNED"))
-                .andExpect(jsonPath("$.reasonMessage")
-                        .value("Protocol WEBSOCKET is planned but not available yet."));
+                .andExpect(jsonPath("$.reasonCode").value("OPERATION_NOT_SUPPORTED"));
     }
 
     @Test

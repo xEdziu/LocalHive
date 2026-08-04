@@ -66,7 +66,13 @@ public class ResearchProtocolRegistry {
                     ResearchOperation.STREAM_GROUP_ACTIVITY,
                     "Stream safe execution group activity updates for admin live views.",
                     false,
-                    "SSE_STREAM"
+                    "ACTIVITY_STREAM"
+            ),
+            new ResearchOperationDescriptor(
+                    ResearchOperation.STOP_STREAM_GROUP_ACTIVITY,
+                    "Stop one active execution group activity stream.",
+                    false,
+                    "STREAM_CONTROL"
             ),
             new ResearchOperationDescriptor(
                     ResearchOperation.DOWNLOAD_ARTIFACT,
@@ -213,20 +219,77 @@ public class ResearchProtocolRegistry {
                         ResearchDataTransferMode.OUTPUT_ARTIFACT,
                         ResearchDataTransferMode.STREAMED_EVENTS
                 ),
-                EnumSet.allOf(ResearchOperation.class),
+                EnumSet.of(
+                        ResearchOperation.CREATE_SINGLE_EXECUTION,
+                        ResearchOperation.CREATE_EXECUTION_GROUP,
+                        ResearchOperation.GET_EXECUTION_STATUS,
+                        ResearchOperation.GET_GROUP_DETAIL,
+                        ResearchOperation.GET_GROUP_ACTIVITY,
+                        ResearchOperation.GET_GROUP_ARTIFACTS,
+                        ResearchOperation.STREAM_GROUP_ACTIVITY,
+                        ResearchOperation.DOWNLOAD_ARTIFACT,
+                        ResearchOperation.CANCEL_GROUP,
+                        ResearchOperation.RECONCILE_GROUP
+                ),
                 combinations
         );
     }
 
     private static ResearchProtocolDescriptor websocketDescriptor() {
+        Set<ResearchProtocolCombination> combinations = Set.of(
+                combination(
+                        ResearchOperation.GET_GROUP_DETAIL,
+                        ResearchDataTransferMode.INLINE_JSON,
+                        ResearchPayloadFormat.JSON
+                ),
+                combination(
+                        ResearchOperation.GET_GROUP_ACTIVITY,
+                        ResearchDataTransferMode.INLINE_JSON,
+                        ResearchPayloadFormat.JSON
+                ),
+                combination(
+                        ResearchOperation.GET_GROUP_ARTIFACTS,
+                        ResearchDataTransferMode.INLINE_JSON,
+                        ResearchPayloadFormat.JSON
+                ),
+                combination(
+                        ResearchOperation.STREAM_GROUP_ACTIVITY,
+                        ResearchDataTransferMode.STREAMED_EVENTS,
+                        ResearchPayloadFormat.JSON
+                ),
+                combination(
+                        ResearchOperation.STOP_STREAM_GROUP_ACTIVITY,
+                        ResearchDataTransferMode.INLINE_JSON,
+                        ResearchPayloadFormat.JSON
+                ),
+                combination(
+                        ResearchOperation.CANCEL_GROUP,
+                        ResearchDataTransferMode.INLINE_JSON,
+                        ResearchPayloadFormat.JSON
+                ),
+                combination(
+                        ResearchOperation.RECONCILE_GROUP,
+                        ResearchDataTransferMode.INLINE_JSON,
+                        ResearchPayloadFormat.JSON
+                )
+        );
+
         return new ResearchProtocolDescriptor(
                 ResearchProtocol.WEBSOCKET,
-                ResearchProtocolStatus.PLANNED,
-                "Planned research adapter for bidirectional real-time communication.",
+                ResearchProtocolStatus.AVAILABLE,
+                "JSON-over-WebSocket research adapter for selected execution group operations.",
                 EnumSet.of(ResearchPayloadFormat.JSON),
                 EnumSet.of(ResearchDataTransferMode.INLINE_JSON, ResearchDataTransferMode.STREAMED_EVENTS),
-                Set.of(),
-                Set.of()
+                EnumSet.of(
+                        ResearchOperation.GET_GROUP_DETAIL,
+                        ResearchOperation.GET_GROUP_ACTIVITY,
+                        ResearchOperation.GET_GROUP_ARTIFACTS,
+                        ResearchOperation.STREAM_GROUP_ACTIVITY,
+                        ResearchOperation.STOP_STREAM_GROUP_ACTIVITY,
+                        ResearchOperation.CANCEL_GROUP,
+                        ResearchOperation.RECONCILE_GROUP
+                ),
+                combinations
         );
     }
 

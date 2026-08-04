@@ -1,6 +1,6 @@
 # Admin Execution Groups API
 
-M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile. M21 adds a derived observability summary to the group detail response and deterministic child execution ordering. M22 adds read-only group output artifact discovery and a lightweight group artifact summary. M23 adds explicit lifecycle action metadata to the group detail response. M24 adds a derived activity feed endpoint for admin polling. M25 adds a lightweight Server-Sent Events stream for admin UI live updates.
+M17 added the read-only admin foundation for sharded workloads. M18 added the first create and event-driven scheduling foundation for Docker shard groups. M19 adds `mergeMode = AGENT`, where Master creates a normal Docker `MERGE` execution after the shard phase is ready. M20 adds admin group cancel and manual one-shot reconcile. M21 adds a derived observability summary to the group detail response and deterministic child execution ordering. M22 adds read-only group output artifact discovery and a lightweight group artifact summary. M23 adds explicit lifecycle action metadata to the group detail response. M24 adds a derived activity feed endpoint for admin polling. M25 adds a lightweight Server-Sent Events stream for admin UI live updates. M27 adds a separate JSON-over-WebSocket research adapter for selected group read/control operations.
 
 An `ExecutionGroup` is group-level metadata for sharding. Child work remains ordinary `WorkExecution` records with nullable group metadata. Master creates `SHARD` children, expands a controlled Docker command template for each shard, assigns as many shards as currently eligible workers allow, and schedules later waves when child executions report terminal status. With `mergeMode = AGENT`, Master later creates one `MERGE` child execution after shard policy allows merge.
 
@@ -625,9 +625,9 @@ This endpoint is a derived read model, not a persisted audit log. It reconstruct
 GET /api/admin/execution-groups/{executionGroupId}/activity/stream
 ```
 
-M25 uses Server-Sent Events for UI-oriented live updates. The stream is one-way from Master to admin clients, works over ordinary HTTP, and is easier to inspect with curl or an HTTP client than a bidirectional protocol. WebSocket and SOAP remain planned as later research protocol adapters; they are not replacements for this admin UI stream.
+M25 uses Server-Sent Events for UI-oriented live updates. The stream is one-way from Master to admin clients, works over ordinary HTTP, and is easier to inspect with curl or an HTTP client than a bidirectional protocol. M27 adds a separate WebSocket research adapter; it does not replace this admin UI stream.
 
-M26 documents REST, future WebSocket, and future SOAP as research protocol adapters in [Research Protocol Contract](research-protocol-contract.md). The SSE stream described here remains an admin UI live update endpoint, not the future WebSocket research adapter.
+M26 documents REST, WebSocket, and future SOAP as research protocol adapters in [Research Protocol Contract](research-protocol-contract.md). The SSE stream described here remains an admin UI live update endpoint, not the WebSocket research adapter.
 
 Behavior:
 
@@ -871,7 +871,7 @@ The worker claim/report protocol is unchanged.
 
 ## Current Limitations
 
-M25 does not implement:
+M27 does not implement:
 
 - `mergeMode = MASTER`,
 - background scheduler,
@@ -881,12 +881,14 @@ M25 does not implement:
 - Agent changes,
 - Docker executor changes,
 - a persistent execution group event log or audit log,
-- WebSocket protocol adapter,
 - SOAP protocol adapter,
+- WebSocket artifact download,
+- WebSocket workspace upload,
+- WebSocket group creation,
 - frontend UI,
 - GPU support,
 - Minecraft lifecycle, or research telemetry.
 
 ## Future Extensions
 
-Future milestones may add background scheduling, Agent-side cooperative cancellation, Master-side merge for controlled formats, richer artifact aggregation and previews, selection diagnostics for groups, retry and requeue policies, frontend views, WebSocket and SOAP research adapters, and persisted run evidence for protocol comparisons.
+Future milestones may add background scheduling, Agent-side cooperative cancellation, Master-side merge for controlled formats, richer artifact aggregation and previews, selection diagnostics for groups, retry and requeue policies, frontend views, SOAP research adapters, and persisted run evidence for protocol comparisons.
