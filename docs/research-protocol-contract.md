@@ -1,8 +1,8 @@
 # Research Protocol Contract
 
-M26 introduced a read-only communication protocol contract for future research work. M27 adds the first JSON-over-WebSocket research adapter for selected admin execution group operations. M28 adds a SOAP/XML research adapter for selected admin execution group read and control operations. M29 adds a static [Research Workload Catalog](research-workload-catalog.md) that can validate workload scenarios against the protocol contract. The contract describes how LocalHive Master exposes comparable admin operations without changing the core execution domain.
+M26 introduced a read-only communication protocol contract for future research work. M27 adds the first JSON-over-WebSocket research adapter for selected admin execution group operations. M28 adds a SOAP/XML research adapter for selected admin execution group read and control operations. M29 adds a static [Research Workload Catalog](research-workload-catalog.md) that can validate workload scenarios against the protocol contract. M30 adds the [Research Benchmark Recorder](research-benchmark-recorder.md) for storing benchmark runs, scenarios, measurements, and events. The contract describes how LocalHive Master exposes comparable admin operations without changing the core execution domain.
 
-The contract is a foundation only. It does not run benchmarks, persist metrics, execute workloads from the catalog, or change any worker-facing API.
+The protocol contract is a foundation only. It does not run benchmarks, execute workloads from the catalog, or change any worker-facing API.
 
 ## Purpose
 
@@ -475,6 +475,6 @@ M28 makes `SOAP` available for selected safe execution group read/control operat
 
 M29 uses `ResearchOperation`, `ResearchDataTransferMode`, and `ResearchPayloadFormat` to describe workload catalog entries and validate them against this contract.
 
-M30 can use the protocol, operation, data transfer mode, and payload format enums as benchmark dimensions.
+M30 stores the protocol, operation, data transfer mode, and payload format enums as benchmark scenario dimensions.
 
 M31 can use the protocol and workload validators to skip unsupported combinations before running comparisons.

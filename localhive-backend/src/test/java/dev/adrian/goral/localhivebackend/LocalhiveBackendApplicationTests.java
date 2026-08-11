@@ -45,7 +45,7 @@ class LocalhiveBackendApplicationTests {
 
     @Test
     void flywayMigratesFreshPostgresAndHibernateValidatesSchema() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("14");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("15");
 
         try (var connection = dataSource.getConnection()) {
             String jdbcUrl = connection.getMetaData().getURL();
@@ -55,10 +55,10 @@ class LocalhiveBackendApplicationTests {
         }
 
         Integer appliedMigrationCount = jdbcTemplate.queryForObject(
-                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14') and success = true",
+                "select count(*) from flyway_schema_history where version in ('1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15') and success = true",
                 Integer.class
         );
-        assertThat(appliedMigrationCount).isEqualTo(14);
+        assertThat(appliedMigrationCount).isEqualTo(15);
 
         List<String> tables = jdbcTemplate.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'public'",
@@ -82,7 +82,11 @@ class LocalhiveBackendApplicationTests {
                 "execution_attempts",
                 "artifacts",
                 "execution_artifacts",
-                "worker_capabilities"
+                "worker_capabilities",
+                "benchmark_runs",
+                "benchmark_scenarios",
+                "benchmark_measurements",
+                "benchmark_events"
         );
 
         List<String> workerColumns = jdbcTemplate.queryForList(

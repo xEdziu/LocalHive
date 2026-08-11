@@ -1,6 +1,6 @@
 # Research Workload Catalog
 
-M29 adds a static, read-only research workload catalog for later benchmark and protocol comparison milestones. The catalog describes repeatable scenarios that M30 and M31 can use as benchmark inputs.
+M29 adds a static, read-only research workload catalog for later benchmark and protocol comparison milestones. The catalog describes repeatable scenarios that the [Research Benchmark Recorder](research-benchmark-recorder.md) and later runner milestones can use as benchmark inputs.
 
 The catalog does not run workloads, create executions, create execution groups, persist benchmark metrics, schedule workers, upload workspace artifacts, or download output artifacts. Runtime smoke testing remains deferred until the combined post-M33 smoke stage.
 
@@ -196,7 +196,7 @@ The workload catalog does not add a new protocol, change adapter behavior, or ex
 
 ## Relation To M30 And M31
 
-M30 can use catalog descriptors to seed benchmark run metadata and metric recording.
+M30 uses catalog descriptors to validate benchmark recorder scenarios before storing them.
 
 M31 can use the workload validation endpoint to skip unsupported protocol combinations before protocol comparison runs.
 
@@ -216,7 +216,6 @@ Responses do not expose raw execution configuration, raw merge plans, API keys, 
 
 M29 intentionally does not implement:
 
-- benchmark persistence,
 - benchmark runner,
 - workload execution automation,
 - automatic execution creation from catalog descriptors,
