@@ -2,7 +2,7 @@
 
 M30 adds a persistent benchmark recorder for thesis and protocol comparison work. It stores benchmark runs, scenarios, measurements, and safe event notes.
 
-This is a recorder foundation only. It does not run workloads, create `WorkExecution`, create `ExecutionGroup`, schedule workers, call REST/WebSocket/SOAP adapters, upload workspace artifacts, download output artifacts, or export datasets. The combined runtime smoke remains deferred until after M33.
+This is a recorder foundation. M31 adds a read-only [Research Protocol Comparison Runner](research-protocol-comparison-runner.md) on top of it. The recorder itself does not run workloads, create `WorkExecution`, create `ExecutionGroup`, schedule workers, upload workspace artifacts, download output artifacts, or export datasets. The combined runtime smoke remains deferred until after M33.
 
 ## Purpose
 
@@ -287,8 +287,6 @@ M30 does not change existing worker authentication, JWT authentication, WebSocke
 
 M30 intentionally does not implement:
 
-- benchmark runner,
-- protocol comparison runner,
 - automatic workload execution,
 - automatic execution or execution group creation,
 - artifact upload/download orchestration,
@@ -299,4 +297,4 @@ M30 intentionally does not implement:
 
 ## Future Extensions
 
-Later milestones can build on this persistence layer to add protocol comparison runners, benchmark exports, fault injection scenarios, and thesis evidence packs.
+Later milestones can build on this persistence layer to add external/runtime benchmark runners, benchmark exports, fault injection scenarios, and thesis evidence packs.

@@ -198,7 +198,7 @@ The workload catalog does not add a new protocol, change adapter behavior, or ex
 
 M30 uses catalog descriptors to validate benchmark recorder scenarios before storing them.
 
-M31 can use the workload validation endpoint to skip unsupported protocol combinations before protocol comparison runs.
+M31 uses the workload validator to reject unsupported protocol, operation, transfer mode, and payload combinations before creating a protocol comparison benchmark run.
 
 M29 itself does not execute those runs.
 
@@ -230,4 +230,4 @@ The next runtime smoke is planned as a larger combined smoke after M33.
 
 ## Future Extensions
 
-Future milestones may add benchmark run records, protocol comparison runners, exported research datasets, fault injection scenarios, frontend workload selection, and richer catalog metadata.
+Future milestones may add external/runtime benchmark runners, exported research datasets, fault injection scenarios, frontend workload selection, and richer catalog metadata.
