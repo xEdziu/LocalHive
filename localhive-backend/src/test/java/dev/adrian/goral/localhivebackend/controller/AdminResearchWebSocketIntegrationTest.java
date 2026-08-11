@@ -417,7 +417,7 @@ class AdminResearchWebSocketIntegrationTest {
                         .with(user(ADMIN_USERNAME).roles("ADMIN")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.protocols[?(@.protocol == 'WEBSOCKET')].status").value("AVAILABLE"))
-                .andExpect(jsonPath("$.protocols[?(@.protocol == 'SOAP')].status").value("PLANNED"));
+                .andExpect(jsonPath("$.protocols[?(@.protocol == 'SOAP')].status").value("AVAILABLE"));
 
         mockMvc.perform(post("/api/admin/research/protocol-contract/validate")
                         .with(user(ADMIN_USERNAME).roles("ADMIN"))

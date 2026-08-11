@@ -1,8 +1,8 @@
 # Research Protocol Contract
 
-M26 introduced a read-only communication protocol contract for future research work. M27 adds the first JSON-over-WebSocket research adapter for selected admin execution group operations. The contract describes how LocalHive Master exposes comparable admin operations without changing the core execution domain.
+M26 introduced a read-only communication protocol contract for future research work. M27 adds the first JSON-over-WebSocket research adapter for selected admin execution group operations. M28 adds a SOAP/XML research adapter for selected admin execution group read and control operations. The contract describes how LocalHive Master exposes comparable admin operations without changing the core execution domain.
 
-The contract is a foundation only. It does not run benchmarks, persist metrics, create workloads, add a SOAP endpoint, or change any worker-facing API.
+The contract is a foundation only. It does not run benchmarks, persist metrics, create workloads, or change any worker-facing API.
 
 ## Purpose
 
@@ -32,9 +32,9 @@ M26 does not add protocol-specific execution behavior. Later milestones can regi
 | --- | --- | --- |
 | `REST` | `AVAILABLE` | Existing HTTP admin API baseline. |
 | `WEBSOCKET` | `AVAILABLE` | JSON-over-WebSocket research adapter for selected execution group operations. |
-| `SOAP` | `PLANNED` | Future XML/SOAP enterprise-style research adapter. |
+| `SOAP` | `AVAILABLE` | XML/SOAP research adapter for selected execution group operations. |
 
-The M25 Server-Sent Events stream is an admin UI live update stream over REST. The M27 WebSocket adapter is a separate research protocol endpoint.
+The M25 Server-Sent Events stream is an admin UI live update stream over REST. The M27 WebSocket adapter and M28 SOAP adapter are separate research protocol endpoints.
 
 ## Operations
 
@@ -142,8 +142,8 @@ Unsupported response:
 ```json
 {
   "valid": false,
-  "reasonCode": "PROTOCOL_PLANNED",
-  "reasonMessage": "Protocol SOAP is planned but not available yet."
+  "reasonCode": "OPERATION_NOT_SUPPORTED",
+  "reasonMessage": "Operation DOWNLOAD_ARTIFACT is not supported by protocol SOAP."
 }
 ```
 
@@ -176,6 +176,16 @@ M27 WebSocket combinations currently validate as supported for:
 - `WEBSOCKET` + `RECONCILE_GROUP` + `INLINE_JSON` + `JSON`.
 
 For example, `WEBSOCKET` + `DOWNLOAD_ARTIFACT` + `OUTPUT_ARTIFACT` + `BINARY` validates as unsupported. Binary artifact transfer remains on the existing REST download endpoint.
+
+M28 SOAP combinations currently validate as supported for:
+
+- `SOAP` + `GET_GROUP_DETAIL` + `INLINE_XML` + `XML`,
+- `SOAP` + `GET_GROUP_ACTIVITY` + `INLINE_XML` + `XML`,
+- `SOAP` + `GET_GROUP_ARTIFACTS` + `INLINE_XML` + `XML`,
+- `SOAP` + `CANCEL_GROUP` + `INLINE_XML` + `XML`,
+- `SOAP` + `RECONCILE_GROUP` + `INLINE_XML` + `XML`.
+
+For example, `SOAP` + `STREAM_GROUP_ACTIVITY` + `STREAMED_EVENTS` + `XML` and `SOAP` + `DOWNLOAD_ARTIFACT` + `OUTPUT_ARTIFACT` + `BINARY` validate as unsupported. SOAP M28 does not stream activity, transfer binary artifacts, use MTOM, upload workspace artifacts, or create execution groups.
 
 ## WebSocket Research Adapter
 
@@ -309,6 +319,109 @@ Stream cleanup happens on:
 - terminal group when `closeOnTerminal = true`,
 - group-not-found or internal stream error.
 
+## SOAP Research Adapter
+
+```http
+POST /api/admin/research/soap
+```
+
+Accepted request content types:
+
+- `text/xml`,
+- `application/soap+xml`.
+
+Responses use a SOAP XML envelope with `application/soap+xml`.
+
+SOAP namespace:
+
+```text
+https://localhive.dev/research/soap
+```
+
+Security:
+
+- ADMIN JWT is required in `Authorization: Bearer ...`,
+- worker API keys are rejected,
+- unauthenticated requests are rejected,
+- USER role is rejected,
+- token-in-query authentication is not supported.
+
+Supported SOAP operations:
+
+| SOAP request | Contract operation | Response |
+| --- | --- | --- |
+| `GetGroupDetailRequest` | `GET_GROUP_DETAIL` | `GetGroupDetailResponse` |
+| `GetGroupActivityRequest` | `GET_GROUP_ACTIVITY` | `GetGroupActivityResponse` |
+| `GetGroupArtifactsRequest` | `GET_GROUP_ARTIFACTS` | `GetGroupArtifactsResponse` |
+| `CancelGroupRequest` | `CANCEL_GROUP` | `CancelGroupResponse` |
+| `ReconcileGroupRequest` | `RECONCILE_GROUP` | `ReconcileGroupResponse` |
+
+Example request:
+
+```xml
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:lh="https://localhive.dev/research/soap">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <lh:GetGroupDetailRequest>
+      <lh:executionGroupId>00000000-0000-0000-0000-000000000000</lh:executionGroupId>
+    </lh:GetGroupDetailRequest>
+  </soapenv:Body>
+</soapenv:Envelope>
+```
+
+Success responses use an operation-specific response element:
+
+```xml
+<lh:GetGroupDetailResponse>
+  <lh:success>true</lh:success>
+  <lh:data>
+    <lh:executionGroupId>00000000-0000-0000-0000-000000000000</lh:executionGroupId>
+    <lh:displayName>Example group</lh:displayName>
+    <lh:status>RUNNING</lh:status>
+  </lh:data>
+</lh:GetGroupDetailResponse>
+```
+
+Application-level errors use a safe XML response:
+
+```xml
+<lh:GetGroupDetailResponse>
+  <lh:success>false</lh:success>
+  <lh:error>
+    <lh:reasonCode>GROUP_NOT_FOUND</lh:reasonCode>
+    <lh:message>Execution group not found.</lh:message>
+  </lh:error>
+</lh:GetGroupDetailResponse>
+```
+
+Stable SOAP error reason codes:
+
+- `MALFORMED_MESSAGE`,
+- `UNKNOWN_OPERATION`,
+- `INVALID_PAYLOAD`,
+- `GROUP_NOT_FOUND`,
+- `OPERATION_NOT_SUPPORTED`,
+- `OPERATION_CONFLICT`,
+- `UNAUTHORIZED`,
+- `INTERNAL_ERROR`.
+
+Malformed XML or a malformed SOAP envelope returns HTTP `400` with a safe SOAP Fault. The fault does not include stack traces, exception class names, tokens, or local paths. Unsupported SOAP operation elements return an application-level error with `OPERATION_NOT_SUPPORTED` when the operation is known but outside M28, or `UNKNOWN_OPERATION` when the element is unknown.
+
+SOAP data is a safe XML projection of existing admin group read models. It can include group identifiers, display names, statuses, merge mode, failure policy, shard counts, child counts, observability summary, lifecycle action metadata, activity events, artifact summaries, artifact ids, relative paths, filenames, content types, sizes, and timestamps.
+
+SOAP responses do not expose raw execution configuration, raw merge plans, API keys, lease tokens, lease hashes, worker secrets, local filesystem paths, physical artifact paths, stack traces, or internal storage keys.
+
+SOAP M28 intentionally does not implement:
+
+- `CreateExecutionGroupRequest`,
+- `StreamGroupActivityRequest`,
+- `DownloadArtifactRequest`,
+- `UploadWorkspaceArtifactRequest`,
+- binary transfer,
+- MTOM,
+- workspace upload,
+- artifact download.
+
 ## Security
 
 Both endpoints are under `/api/admin/**`.
@@ -328,7 +441,11 @@ The WebSocket endpoint is also under `/api/admin/**` and applies the same safe D
 
 The current research protocol foundation does not implement:
 
-- SOAP endpoint or adapter,
+- SOAP streaming,
+- SOAP binary or MTOM transfer,
+- SOAP workspace upload,
+- SOAP artifact download,
+- SOAP execution group creation,
 - WebSocket binary transfer,
 - WebSocket workspace upload,
 - WebSocket artifact download,
@@ -347,7 +464,7 @@ The current research protocol foundation does not implement:
 
 M27 makes `WEBSOCKET` available for selected safe execution group operations and activity streaming.
 
-M28 can make `SOAP` available by registering a SOAP adapter against XML/SOAP operations.
+M28 makes `SOAP` available for selected safe execution group read/control operations over inline XML.
 
 M29 can use `ResearchOperation`, `ResearchDataTransferMode`, and `ResearchPayloadFormat` to describe workload catalog entries.
 

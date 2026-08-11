@@ -116,7 +116,7 @@ class AdminResearchProtocolContractControllerIntegrationTest {
         assertThat(JsonPath.<List<String>>read(response, "$.protocols[*].protocol"))
                 .containsExactly("REST", "WEBSOCKET", "SOAP");
         assertThat(JsonPath.<List<String>>read(response, "$.protocols[*].status"))
-                .containsExactly("AVAILABLE", "AVAILABLE", "PLANNED");
+                .containsExactly("AVAILABLE", "AVAILABLE", "AVAILABLE");
         assertThat(JsonPath.<List<String>>read(response, "$.operations[*].operation"))
                 .contains(
                         "CREATE_SINGLE_EXECUTION",
@@ -146,6 +146,9 @@ class AdminResearchProtocolContractControllerIntegrationTest {
         assertThat(JsonPath.<List<String>>read(response, "$.protocols[?(@.protocol == 'WEBSOCKET')].supportedOperations[*]"))
                 .contains("GET_GROUP_DETAIL", "STREAM_GROUP_ACTIVITY", "STOP_STREAM_GROUP_ACTIVITY")
                 .doesNotContain("DOWNLOAD_ARTIFACT");
+        assertThat(JsonPath.<List<String>>read(response, "$.protocols[?(@.protocol == 'SOAP')].supportedOperations[*]"))
+                .contains("GET_GROUP_DETAIL", "GET_GROUP_ACTIVITY", "GET_GROUP_ARTIFACTS", "CANCEL_GROUP", "RECONCILE_GROUP")
+                .doesNotContain("CREATE_EXECUTION_GROUP", "STREAM_GROUP_ACTIVITY", "DOWNLOAD_ARTIFACT");
         assertSafeResearchResponse(response);
     }
 
@@ -203,20 +206,90 @@ class AdminResearchProtocolContractControllerIntegrationTest {
     }
 
     @Test
-    void shouldRejectPlannedSoapCombinationAsUnsupportedModelResult() throws Exception {
+    void shouldValidateSupportedSoapCombinations() throws Exception {
         mockMvc.perform(validate("""
                         {
                           "protocol": "SOAP",
-                          "operation": "CREATE_EXECUTION_GROUP",
+                          "operation": "GET_GROUP_DETAIL",
                           "dataTransferMode": "INLINE_XML",
                           "payloadFormat": "XML"
                         }
                         """))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(true))
+                .andExpect(jsonPath("$.reasonCode").value(nullValue()))
+                .andExpect(jsonPath("$.reasonMessage").value("Combination is supported."));
+
+        mockMvc.perform(validate("""
+                        {
+                          "protocol": "SOAP",
+                          "operation": "GET_GROUP_ACTIVITY",
+                          "dataTransferMode": "INLINE_XML",
+                          "payloadFormat": "XML"
+                        }
+                        """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(true));
+
+        mockMvc.perform(validate("""
+                        {
+                          "protocol": "SOAP",
+                          "operation": "GET_GROUP_ARTIFACTS",
+                          "dataTransferMode": "INLINE_XML",
+                          "payloadFormat": "XML"
+                        }
+                        """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(true));
+
+        mockMvc.perform(validate("""
+                        {
+                          "protocol": "SOAP",
+                          "operation": "CANCEL_GROUP",
+                          "dataTransferMode": "INLINE_XML",
+                          "payloadFormat": "XML"
+                        }
+                        """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(true));
+
+        mockMvc.perform(validate("""
+                        {
+                          "protocol": "SOAP",
+                          "operation": "RECONCILE_GROUP",
+                          "dataTransferMode": "INLINE_XML",
+                          "payloadFormat": "XML"
+                        }
+                        """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(true));
+    }
+
+    @Test
+    void shouldRejectUnsupportedSoapCombinationsAsUnsupportedModelResult() throws Exception {
+        mockMvc.perform(validate("""
+                        {
+                          "protocol": "SOAP",
+                          "operation": "STREAM_GROUP_ACTIVITY",
+                          "dataTransferMode": "STREAMED_EVENTS",
+                          "payloadFormat": "XML"
+                        }
+                        """))
+                .andExpect(status().isOk())
                 .andExpect(jsonPath("$.valid").value(false))
-                .andExpect(jsonPath("$.reasonCode").value("PROTOCOL_PLANNED"))
-                .andExpect(jsonPath("$.reasonMessage")
-                        .value("Protocol SOAP is planned but not available yet."));
+                .andExpect(jsonPath("$.reasonCode").value("OPERATION_NOT_SUPPORTED"));
+
+        mockMvc.perform(validate("""
+                        {
+                          "protocol": "SOAP",
+                          "operation": "DOWNLOAD_ARTIFACT",
+                          "dataTransferMode": "OUTPUT_ARTIFACT",
+                          "payloadFormat": "BINARY"
+                        }
+                        """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(false))
+                .andExpect(jsonPath("$.reasonCode").value("OPERATION_NOT_SUPPORTED"));
     }
 
     @Test

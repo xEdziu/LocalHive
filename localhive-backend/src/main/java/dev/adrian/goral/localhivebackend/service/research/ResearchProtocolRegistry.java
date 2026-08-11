@@ -294,18 +294,48 @@ public class ResearchProtocolRegistry {
     }
 
     private static ResearchProtocolDescriptor soapDescriptor() {
+        Set<ResearchProtocolCombination> combinations = Set.of(
+                combination(
+                        ResearchOperation.GET_GROUP_DETAIL,
+                        ResearchDataTransferMode.INLINE_XML,
+                        ResearchPayloadFormat.XML
+                ),
+                combination(
+                        ResearchOperation.GET_GROUP_ACTIVITY,
+                        ResearchDataTransferMode.INLINE_XML,
+                        ResearchPayloadFormat.XML
+                ),
+                combination(
+                        ResearchOperation.GET_GROUP_ARTIFACTS,
+                        ResearchDataTransferMode.INLINE_XML,
+                        ResearchPayloadFormat.XML
+                ),
+                combination(
+                        ResearchOperation.CANCEL_GROUP,
+                        ResearchDataTransferMode.INLINE_XML,
+                        ResearchPayloadFormat.XML
+                ),
+                combination(
+                        ResearchOperation.RECONCILE_GROUP,
+                        ResearchDataTransferMode.INLINE_XML,
+                        ResearchPayloadFormat.XML
+                )
+        );
+
         return new ResearchProtocolDescriptor(
                 ResearchProtocol.SOAP,
-                ResearchProtocolStatus.PLANNED,
-                "Planned research adapter for XML/SOAP enterprise-style communication.",
+                ResearchProtocolStatus.AVAILABLE,
+                "XML/SOAP research adapter for selected execution group operations.",
                 EnumSet.of(ResearchPayloadFormat.XML),
+                EnumSet.of(ResearchDataTransferMode.INLINE_XML),
                 EnumSet.of(
-                        ResearchDataTransferMode.INLINE_XML,
-                        ResearchDataTransferMode.WORKSPACE_ARTIFACT,
-                        ResearchDataTransferMode.OUTPUT_ARTIFACT
+                        ResearchOperation.GET_GROUP_DETAIL,
+                        ResearchOperation.GET_GROUP_ACTIVITY,
+                        ResearchOperation.GET_GROUP_ARTIFACTS,
+                        ResearchOperation.CANCEL_GROUP,
+                        ResearchOperation.RECONCILE_GROUP
                 ),
-                Set.of(),
-                Set.of()
+                combinations
         );
     }
 
