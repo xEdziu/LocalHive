@@ -15,6 +15,7 @@ LocalHive Master is the central service for LocalHive worker registration, work 
 - [Execution display metadata](docs/execution-display-metadata.md)
 - [Output artifacts](docs/output-artifacts.md)
 - [Research benchmark recorder](docs/research-benchmark-recorder.md)
+- [Research fault scenarios](docs/research-fault-scenarios.md)
 - [Research protocol contract](docs/research-protocol-contract.md)
 - [Research protocol comparison runner](docs/research-protocol-comparison-runner.md)
 - [Research result export](docs/research-result-export.md)

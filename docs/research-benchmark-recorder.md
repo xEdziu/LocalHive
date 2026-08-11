@@ -2,7 +2,7 @@
 
 M30 adds a persistent benchmark recorder for thesis and protocol comparison work. It stores benchmark runs, scenarios, measurements, and safe event notes.
 
-This is a recorder foundation. M31 adds a read-only [Research Protocol Comparison Runner](research-protocol-comparison-runner.md) on top of it. M32 adds read-only [Research Result Export](research-result-export.md) endpoints for JSON and CSV datasets. The recorder itself does not run workloads, create `WorkExecution`, create `ExecutionGroup`, schedule workers, upload workspace artifacts, or download output artifacts. The combined runtime smoke remains deferred until after M33.
+This is a recorder foundation. M31 adds a read-only [Research Protocol Comparison Runner](research-protocol-comparison-runner.md) on top of it. M32 adds read-only [Research Result Export](research-result-export.md) endpoints for JSON and CSV datasets. M33 adds read-only [Research Fault Scenarios](research-fault-scenarios.md) that can inform future robustness measurements. The recorder itself does not run workloads, create `WorkExecution`, create `ExecutionGroup`, schedule workers, upload workspace artifacts, or download output artifacts. The combined runtime smoke remains deferred until after M33.
 
 ## Purpose
 
@@ -296,4 +296,4 @@ M30 intentionally does not implement:
 
 ## Future Extensions
 
-Later milestones can build on this persistence layer to add external/runtime benchmark runners, ZIP/XLSX exports, fault injection scenarios, and thesis evidence packs.
+Later milestones can build on this persistence layer to add external/runtime benchmark runners, runtime fault scenario execution, ZIP/XLSX exports, and thesis evidence packs.

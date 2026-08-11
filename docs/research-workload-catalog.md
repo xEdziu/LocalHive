@@ -1,6 +1,6 @@
 # Research Workload Catalog
 
-M29 adds a static, read-only research workload catalog for later benchmark and protocol comparison milestones. The catalog describes repeatable scenarios that the [Research Benchmark Recorder](research-benchmark-recorder.md) and later runner milestones can use as benchmark inputs.
+M29 adds a static, read-only research workload catalog for later benchmark and protocol comparison milestones. The catalog describes repeatable scenarios that the [Research Benchmark Recorder](research-benchmark-recorder.md), [Research Fault Scenarios](research-fault-scenarios.md), and later runner milestones can use as benchmark inputs.
 
 The catalog does not run workloads, create executions, create execution groups, persist benchmark metrics, schedule workers, upload workspace artifacts, or download output artifacts. Runtime smoke testing remains deferred until the combined post-M33 smoke stage.
 
@@ -200,6 +200,8 @@ M30 uses catalog descriptors to validate benchmark recorder scenarios before sto
 
 M31 uses the workload validator to reject unsupported protocol, operation, transfer mode, and payload combinations before creating a protocol comparison benchmark run.
 
+M33 uses the workload catalog as the workload side of the read-only fault scenario validator.
+
 M29 itself does not execute those runs.
 
 ## Security
@@ -230,4 +232,4 @@ The next runtime smoke is planned as a larger combined smoke after M33.
 
 ## Future Extensions
 
-Future milestones may add external/runtime benchmark runners, exported research datasets, fault injection scenarios, frontend workload selection, and richer catalog metadata.
+Future milestones may add external/runtime benchmark runners, frontend workload selection, and richer catalog metadata.

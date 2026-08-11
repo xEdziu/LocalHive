@@ -1,6 +1,6 @@
 # Research Protocol Contract
 
-M26 introduced a read-only communication protocol contract for future research work. M27 adds the first JSON-over-WebSocket research adapter for selected admin execution group operations. M28 adds a SOAP/XML research adapter for selected admin execution group read and control operations. M29 adds a static [Research Workload Catalog](research-workload-catalog.md) that can validate workload scenarios against the protocol contract. M30 adds the [Research Benchmark Recorder](research-benchmark-recorder.md) for storing benchmark runs, scenarios, measurements, and events. M31 adds the read-only [Research Protocol Comparison Runner](research-protocol-comparison-runner.md). The contract describes how LocalHive Master exposes comparable admin operations without changing the core execution domain.
+M26 introduced a read-only communication protocol contract for future research work. M27 adds the first JSON-over-WebSocket research adapter for selected admin execution group operations. M28 adds a SOAP/XML research adapter for selected admin execution group read and control operations. M29 adds a static [Research Workload Catalog](research-workload-catalog.md) that can validate workload scenarios against the protocol contract. M30 adds the [Research Benchmark Recorder](research-benchmark-recorder.md) for storing benchmark runs, scenarios, measurements, and events. M31 adds the read-only [Research Protocol Comparison Runner](research-protocol-comparison-runner.md). M33 adds read-only [Research Fault Scenarios](research-fault-scenarios.md) that reuse this contract for robustness-case validation. The contract describes how LocalHive Master exposes comparable admin operations without changing the core execution domain.
 
 The protocol contract is a foundation only. It does not run benchmarks, execute workloads from the catalog, or change any worker-facing API.
 
@@ -460,7 +460,7 @@ The current research protocol foundation does not implement:
 - WebSocket execution group creation,
 - external network benchmark runner,
 - result export,
-- fault injection,
+- runtime fault injection,
 - persistent protocol event log,
 - changes to REST admin endpoint behavior,
 - changes to worker protocol.
@@ -476,3 +476,5 @@ M29 uses `ResearchOperation`, `ResearchDataTransferMode`, and `ResearchPayloadFo
 M30 stores the protocol, operation, data transfer mode, and payload format enums as benchmark scenario dimensions.
 
 M31 uses the protocol and workload validators before running read-only protocol comparisons.
+
+M33 uses this protocol validator before applying fault-scenario-specific rules, except for the intentional `UNSUPPORTED_PROTOCOL_COMBINATION` negative-case scenario.
