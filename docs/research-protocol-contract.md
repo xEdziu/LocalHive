@@ -1,8 +1,8 @@
 # Research Protocol Contract
 
-M26 introduced a read-only communication protocol contract for future research work. M27 adds the first JSON-over-WebSocket research adapter for selected admin execution group operations. M28 adds a SOAP/XML research adapter for selected admin execution group read and control operations. The contract describes how LocalHive Master exposes comparable admin operations without changing the core execution domain.
+M26 introduced a read-only communication protocol contract for future research work. M27 adds the first JSON-over-WebSocket research adapter for selected admin execution group operations. M28 adds a SOAP/XML research adapter for selected admin execution group read and control operations. M29 adds a static [Research Workload Catalog](research-workload-catalog.md) that can validate workload scenarios against the protocol contract. The contract describes how LocalHive Master exposes comparable admin operations without changing the core execution domain.
 
-The contract is a foundation only. It does not run benchmarks, persist metrics, create workloads, or change any worker-facing API.
+The contract is a foundation only. It does not run benchmarks, persist metrics, execute workloads from the catalog, or change any worker-facing API.
 
 ## Purpose
 
@@ -164,6 +164,14 @@ Stable reason codes:
 - `COMBINATION_NOT_SUPPORTED`.
 
 The `UNKNOWN_*` reason codes are part of the internal validation model. Public JSON enum binding can still reject unknown enum text with `400` before the validator runs.
+
+M29 adds a separate workload validation endpoint:
+
+```http
+POST /api/admin/research/workload-catalog/validate
+```
+
+That endpoint first delegates to this protocol contract validator and then applies workload-specific rules such as execution shape and workspace artifact requirements.
 
 M27 WebSocket combinations currently validate as supported for:
 
@@ -452,7 +460,6 @@ The current research protocol foundation does not implement:
 - WebSocket execution group creation,
 - benchmark persistence,
 - benchmark runner,
-- workload catalog,
 - protocol comparison runner,
 - result export,
 - fault injection,
@@ -466,8 +473,8 @@ M27 makes `WEBSOCKET` available for selected safe execution group operations and
 
 M28 makes `SOAP` available for selected safe execution group read/control operations over inline XML.
 
-M29 can use `ResearchOperation`, `ResearchDataTransferMode`, and `ResearchPayloadFormat` to describe workload catalog entries.
+M29 uses `ResearchOperation`, `ResearchDataTransferMode`, and `ResearchPayloadFormat` to describe workload catalog entries and validate them against this contract.
 
 M30 can use the protocol, operation, data transfer mode, and payload format enums as benchmark dimensions.
 
-M31 can use the validator to skip unsupported protocol combinations before running comparisons.
+M31 can use the protocol and workload validators to skip unsupported combinations before running comparisons.
