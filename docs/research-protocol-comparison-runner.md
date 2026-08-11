@@ -2,7 +2,7 @@
 
 M31 adds a small admin-only runner that compares common read-only execution group operations across the current REST, WebSocket, and SOAP research adapters.
 
-The runner is intentionally limited. It records server-side adapter/read-model measurements into the M30 benchmark tables. It is not a full external network benchmark and it does not run workloads. The combined runtime smoke remains deferred until after M33.
+The runner is intentionally limited. It records server-side adapter/read-model measurements into the M30 benchmark tables. M32 can export those results through the [Research Result Export](research-result-export.md) endpoints. M31 is not a full external network benchmark and it does not run workloads. The combined runtime smoke remains deferred until after M33.
 
 ## Endpoint
 
@@ -206,7 +206,6 @@ M31 does not implement:
 - WebSocket streaming comparison,
 - SOAP streaming,
 - output artifact download benchmarking,
-- benchmark export,
 - frontend UI,
 - fault injection.
 
